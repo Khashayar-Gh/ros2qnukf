@@ -1,0 +1,117 @@
+#ifndef ROS2QNUKF__INGESTION_NODE_HPP_
+#define ROS2QNUKF__INGESTION_NODE_HPP_
+
+#include <deque>
+#include <memory>
+#include <mutex>
+#include <optional>
+#include <random>
+#include <string>
+#include <vector>
+
+#include <Eigen/Core>
+#include <Eigen/Geometry>
+#include <geometry_msgs/msg/pose_stamped.hpp>
+#include <geometry_msgs/msg/pose_with_covariance_stamped.hpp>
+#include <geometry_msgs/msg/transform_stamped.hpp>
+#include <message_filters/subscriber.hpp>
+#include <message_filters/sync_policies/approximate_time.hpp>
+#include <message_filters/synchronizer.hpp>
+#include <nav_msgs/msg/path.hpp>
+#include <rclcpp/rclcpp.hpp>
+#include <sensor_msgs/msg/image.hpp>
+#include <sensor_msgs/msg/imu.hpp>
+
+#include "ros2qnukf/qnukf_filter.hpp"
+
+namespace ros2qnukf
+{
+
+class IngestionNode : public rclcpp::Node
+{
+public:
+  explicit IngestionNode(const rclcpp::NodeOptions & options = rclcpp::NodeOptions{});
+
+private:
+  struct GtPoseMeasurement
+  {
+    rclcpp::Time stamp{0, 0, RCL_ROS_TIME};
+    Eigen::Vector3d position{Eigen::Vector3d::Zero()};
+    Eigen::Quaterniond orientation{Eigen::Quaterniond::Identity()};
+  };
+
+  using StereoSyncPolicy = message_filters::sync_policies::ApproximateTime<
+    sensor_msgs::msg::Image,
+    sensor_msgs::msg::Image>;
+  using StereoSynchronizer = message_filters::Synchronizer<StereoSyncPolicy>;
+
+  void imu_callback(sensor_msgs::msg::Imu::ConstSharedPtr msg);
+  void gt_pose_callback(geometry_msgs::msg::PoseStamped::ConstSharedPtr msg);
+  void gt_transform_callback(geometry_msgs::msg::TransformStamped::ConstSharedPtr msg);
+  void stereo_callback(
+    const sensor_msgs::msg::Image::ConstSharedPtr & left_msg,
+    const sensor_msgs::msg::Image::ConstSharedPtr & right_msg);
+
+  bool try_process_stereo_frame(const rclcpp::Time & frame_stamp);
+  void drain_pending_stereo_frames_locked();
+
+  std::optional<GtPoseMeasurement> lookup_gt_pose_interpolated(const rclcpp::Time & stamp) const;
+  QnukfFilter::PseudoVisionMeasurement build_pseudo_vision_measurement(
+    const GtPoseMeasurement & gt_pose);
+
+  void trim_imu_history(const rclcpp::Time & keep_after);
+  void trim_gt_history(const rclcpp::Time & keep_after);
+  void initialize_pseudo_world_points();
+  void try_filter_update(const QnukfFilter::PseudoVisionMeasurement & pseudo_measurement);
+  void publish_filter_estimate(const rclcpp::Time & stamp);
+
+  rclcpp::QoS build_sensor_qos(int depth) const;
+
+  std::string imu_topic_{"/imu0"};
+  std::string left_image_topic_{"/cam0/image_raw"};
+  std::string right_image_topic_{"/cam1/image_raw"};
+  std::string gt_pose_topic_{"/ov_msckf/posegt"};
+  std::string gt_transform_topic_{"/vicon/firefly_sbx/firefly_sbx"};
+  std::string estimate_pose_topic_{"/ros2qnukf/pose_estimate"};
+  std::string estimate_pose_cov_topic_{"/ros2qnukf/pose_estimate_cov"};
+  std::string estimate_path_topic_{"/ros2qnukf/path_estimate"};
+  bool debug_{false};
+  bool use_stereo_{true};
+  int sensor_qos_depth_{10};
+  double cam_to_imu_dt_sec_{0.0};
+  double gt_lookup_max_dt_sec_{0.25}; //allow observed ~0.2s image-to-GT timestamp skew
+  double imu_history_sec_{2.0};
+  double pseudo_noise_stddev_{0.01};
+  int pseudo_feature_count_{20};
+  int stereo_sync_queue_size_{15};
+  int stereo_queue_max_{512};
+  double path_publish_period_sec_{0.0};
+  bool pseudo_pose_when_no_gt_{false};
+  bool camera_qos_reliable_{false};
+
+  std::mutex data_mutex_{};
+  QnukfFilter filter_{};
+  std::deque<QnukfFilter::ImuMeasurement> imu_history_{};
+  std::deque<GtPoseMeasurement> gt_history_{};
+  std::vector<Eigen::Vector3d> pseudo_world_points_{};
+  std::optional<rclcpp::Time> last_path_publish_stamp_{};
+  std::deque<rclcpp::Time> pending_stereo_frame_stamps_{};
+
+  std::mt19937 random_engine_{};
+  std::normal_distribution<double> noise_distribution_{0.0, 1.0};
+
+  rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_{};
+  rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr gt_pose_sub_{};
+  rclcpp::Subscription<geometry_msgs::msg::TransformStamped>::SharedPtr gt_transform_sub_{};
+  rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr estimate_pose_pub_{};
+  rclcpp::Publisher<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr estimate_pose_cov_pub_{};
+  rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr estimate_path_pub_{};
+  nav_msgs::msg::Path estimate_path_msg_{};
+  std::shared_ptr<message_filters::Subscriber<sensor_msgs::msg::Image>> left_image_sub_{};
+  std::shared_ptr<message_filters::Subscriber<sensor_msgs::msg::Image>> right_image_sub_{};
+  std::shared_ptr<StereoSynchronizer> stereo_sync_{};
+};
+
+}  // namespace ros2qnukf
+
+#endif  // ROS2QNUKF__INGESTION_NODE_HPP_

@@ -1,0 +1,116 @@
+<?xml version="1.0"?>
+<launch>
+  <arg name="dataset" default="V2_01_easy"/>
+  <arg name="bag_enable" default="true"/>
+  <arg name="bag_path" default="/home/kash/datasets/$(var dataset)"/>
+  <arg name="bag_rate" default="1.0"/>
+  <arg name="bag_start" default="0.0"/>
+  <arg name="rviz_enable" default="true"/>
+  <arg name="rviz_config" default="/home/kash/workspace/catkin_ws_ov_copy/src/ros2qnukf/config/ros2qnukf_display.rviz"/>
+
+  <arg name="use_sim_time" default="true"/>
+  <arg name="imu_topic" default="/imu0"/>
+  <arg name="left_image_topic" default="/cam0/image_raw"/>
+  <arg name="right_image_topic" default="/cam1/image_raw"/>
+  <arg name="gt_pose_topic" default="/ov_msckf/posegt"/>
+  <arg name="gt_path_topic" default="/ov_msckf/pathgt"/>
+  <arg name="gt_transform_topic" default="/vicon/firefly_sbx/firefly_sbx"/>
+  <arg name="gt_from_csv_enable" default="true"/>
+  <arg name="path_gt_csv" default="/home/kash/workspace/catkin_ws_ov_copy/src/open_vins/ov_data/euroc_mav/$(var dataset).csv"/>
+  <arg name="gt_csv_publish_rate_hz" default="60.0"/>
+  <arg name="estimate_pose_topic" default="/ros2qnukf/pose_estimate"/>
+  <arg name="estimate_pose_cov_topic" default="/ros2qnukf/pose_estimate_cov"/>
+  <arg name="estimate_path_topic" default="/ros2qnukf/path_estimate"/>
+  <arg name="initial_realign_enable" default="true"/>
+  <arg name="gt_aligned_pose_topic" default="/ros2qnukf/posegt_aligned"/>
+  <arg name="gt_aligned_path_topic" default="/ros2qnukf/pathgt_aligned"/>
+  <arg name="gt_align_type" default="posyaw"/>
+  <arg name="gt_align_assoc_dt" default="0.02"/>
+  <arg name="gt_align_min_pairs" default="8"/>
+  <arg name="gt_align_lock_pairs" default="40"/>
+  <arg name="gt_align_publish_tf" default="true"/>
+  <arg name="gt_align_tf_parent" default="world"/>
+  <arg name="gt_align_tf_child" default="gt_aligned"/>
+  <arg name="cam_to_imu_dt_sec" default="0.0"/>
+  <arg name="debug" default="false"/>
+  <arg name="path_publish_period_sec" default="0.0"/>
+  <arg name="sensor_qos_depth" default="10"/>
+  <arg name="stereo_sync_queue_size" default="15"/>
+  <arg name="stereo_queue_max" default="512"/>
+  <arg name="imu_history_sec" default="2.0"/>
+  <arg name="gt_lookup_max_dt_sec" default="0.25"/>
+  <arg name="pseudo_feature_count" default="20"/>
+  <arg name="pseudo_noise_stddev" default="0.02"/>
+  <arg name="use_stereo" default="true"/>
+  <arg name="pseudo_pose_when_no_gt" default="false"/>
+  <arg name="camera_qos_reliable" default="false"/>
+
+  <node pkg="ros2qnukf" exec="ros2qnukf_ingestion_node" name="ros2qnukf_ingestion" output="screen">
+    <param name="use_sim_time" value="$(var use_sim_time)"/>
+    <param name="imu_topic" value="$(var imu_topic)"/>
+    <param name="left_image_topic" value="$(var left_image_topic)"/>
+    <param name="right_image_topic" value="$(var right_image_topic)"/>
+    <param name="gt_pose_topic" value="$(var gt_pose_topic)"/>
+    <param name="gt_transform_topic" value="$(var gt_transform_topic)"/>
+    <param name="estimate_pose_topic" value="$(var estimate_pose_topic)"/>
+    <param name="estimate_pose_cov_topic" value="$(var estimate_pose_cov_topic)"/>
+    <param name="estimate_path_topic" value="$(var estimate_path_topic)"/>
+    <param name="cam_to_imu_dt_sec" value="$(var cam_to_imu_dt_sec)"/>
+    <param name="debug" value="$(var debug)"/>
+    <param name="path_publish_period_sec" value="$(var path_publish_period_sec)"/>
+    <param name="sensor_qos_depth" value="$(var sensor_qos_depth)"/>
+    <param name="stereo_sync_queue_size" value="$(var stereo_sync_queue_size)"/>
+    <param name="stereo_queue_max" value="$(var stereo_queue_max)"/>
+    <param name="imu_history_sec" value="$(var imu_history_sec)"/>
+    <param name="gt_lookup_max_dt_sec" value="$(var gt_lookup_max_dt_sec)"/>
+    <param name="pseudo_feature_count" value="$(var pseudo_feature_count)"/>
+    <param name="pseudo_noise_stddev" value="$(var pseudo_noise_stddev)"/>
+    <param name="use_stereo" value="$(var use_stereo)"/>
+    <param name="pseudo_pose_when_no_gt" value="$(var pseudo_pose_when_no_gt)"/>
+    <param name="camera_qos_reliable" value="$(var camera_qos_reliable)"/>
+  </node>
+
+  <node
+    if="$(var gt_from_csv_enable)"
+    pkg="ros2qnukf"
+    exec="ros2qnukf_gt_csv_publisher"
+    name="ros2qnukf_gt_csv_publisher"
+    output="screen">
+    <param name="use_sim_time" value="$(var use_sim_time)"/>
+    <param name="path_gt_csv" value="$(var path_gt_csv)"/>
+    <param name="gt_pose_topic" value="$(var gt_pose_topic)"/>
+    <param name="gt_path_topic" value="$(var gt_path_topic)"/>
+    <param name="publish_rate_hz" value="$(var gt_csv_publish_rate_hz)"/>
+  </node>
+
+  <node
+    if="$(var initial_realign_enable)"
+    pkg="qnukf_incomplete"
+    exec="initial_pose_realign_node"
+    name="initial_pose_realign"
+    output="screen">
+    <param name="est_topic" value="$(var estimate_pose_cov_topic)"/>
+    <param name="gt_topic" value="$(var gt_pose_topic)"/>
+    <param name="output_pose_topic" value="$(var gt_aligned_pose_topic)"/>
+    <param name="output_path_topic" value="$(var gt_aligned_path_topic)"/>
+    <param name="alignment_type" value="$(var gt_align_type)"/>
+    <param name="association_max_dt_sec" value="$(var gt_align_assoc_dt)"/>
+    <param name="min_pairs_for_alignment" value="$(var gt_align_min_pairs)"/>
+    <param name="lock_pairs" value="$(var gt_align_lock_pairs)"/>
+    <param name="publish_gt_aligned_tf" value="$(var gt_align_publish_tf)"/>
+    <param name="tf_parent_frame" value="$(var gt_align_tf_parent)"/>
+    <param name="tf_gt_aligned_frame" value="$(var gt_align_tf_child)"/>
+  </node>
+
+  <executable
+    if="$(var bag_enable)"
+    cmd="ros2 bag play $(var bag_path) --clock --rate $(var bag_rate) --start-offset $(var bag_start)"/>
+
+  <node
+    if="$(var rviz_enable)"
+    pkg="rviz2"
+    exec="rviz2"
+    name="ros2qnukf_rviz"
+    args="-d $(var rviz_config)"
+    output="screen"/>
+</launch>
