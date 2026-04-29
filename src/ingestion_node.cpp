@@ -132,9 +132,10 @@ void IngestionNode::imu_callback(sensor_msgs::msg::Imu::ConstSharedPtr msg)
     const auto & prev = imu_history_[imu_history_.size() - 2U];
     const auto & curr = imu_history_[imu_history_.size() - 1U];
     filter_.predict_step(prev, curr);
+    trim_imu_history(curr.stamp);
   }
 
-  trim_imu_history(measurement.stamp - rclcpp::Duration::from_seconds(imu_history_sec_));
+  
   drain_pending_stereo_frames_locked();
 }
 
@@ -330,7 +331,7 @@ QnukfFilter::PseudoVisionMeasurement IngestionNode::build_pseudo_vision_measurem
 
 void IngestionNode::trim_imu_history(const rclcpp::Time & keep_after)
 {
-  // Remove samples strictly before keep_after; keep stamps t >= keep_after.
+  // Keep newest IMU sample; all older samples already consumed by predict_step.
   while (!imu_history_.empty() && imu_history_.front().stamp < keep_after) {
     imu_history_.pop_front();
   }

@@ -193,7 +193,7 @@ ros2 topic echo /ros2qnukf/pose_estimate --once
 | `sensor_qos_depth` | `10` | Subscriber history depth for sensor QoS. |
 | `path_publish_period_sec` | `0` | Path publish throttle (pose still every successful update). |
 | `pseudo_feature_count`, `pseudo_noise_stddev` | `20`, `0.02` | Pseudo measurement count / noise scale. |
-| `imu_history_sec` | `2.0` | Rolling IMU buffer horizon. |
+| `imu_history_sec` | `2.0` | GT history trim horizon (`gt_history_` retention window). IMU history trim is consumption-based (drop all samples older than newest predicted sample). |
 | `gt_lookup_max_dt_sec` | `0.25` | GT history trim horizon. |
 | `pseudo_pose_when_no_gt` | `false` | If **true**, when no GT pose is available at frame time the node uses **current filter state** as the synthetic “GT” for pseudo vision (IMU/smoke-test only; not for benchmark accuracy). |
 | `camera_qos_reliable` | `false` | If **true**, stereo image subscriptions use **reliable** QoS instead of sensor-style best-effort — try if synchronized stereo never arrives from your bag. |
