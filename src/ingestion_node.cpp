@@ -1,10 +1,15 @@
 #include "ros2qnukf/ingestion_node.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <functional>
 #include <random>
 #include <stdexcept>
+
+#include <geometry_msgs/msg/point.hpp>
+#include <std_msgs/msg/color_rgba.hpp>
+#include <visualization_msgs/msg/marker.hpp>
 
 namespace ros2qnukf
 {
@@ -53,6 +58,17 @@ IngestionNode::IngestionNode(const rclcpp::NodeOptions & options)
     this->declare_parameter<double>("path_publish_period_sec", path_publish_period_sec_));
   pseudo_pose_when_no_gt_ = this->declare_parameter<bool>("pseudo_pose_when_no_gt", pseudo_pose_when_no_gt_);
   camera_qos_reliable_ = this->declare_parameter<bool>("camera_qos_reliable", camera_qos_reliable_);
+  publish_gt_feature_markers_ =
+    this->declare_parameter<bool>("publish_gt_feature_markers", publish_gt_feature_markers_);
+  gt_feature_markers_topic_ =
+    this->declare_parameter<std::string>("gt_feature_markers_topic", gt_feature_markers_topic_);
+  gt_feature_marker_diameter_ = std::max(
+    1e-6,
+    this->declare_parameter<double>("gt_feature_marker_diameter", gt_feature_marker_diameter_));
+  gt_feature_markers_publish_hz_ = std::clamp(
+    this->declare_parameter<double>("gt_feature_markers_publish_hz", gt_feature_markers_publish_hz_),
+    0.1,
+    50.0);
 
   const auto sensor_qos = build_sensor_qos(sensor_qos_depth_);
   const rclcpp::QoS camera_qos =
@@ -88,6 +104,10 @@ IngestionNode::IngestionNode(const rclcpp::NodeOptions & options)
   estimate_path_pub_ =
     this->create_publisher<nav_msgs::msg::Path>(estimate_path_topic_, output_qos);
   estimate_path_msg_.header.frame_id = "world";
+  if (publish_gt_feature_markers_) {
+    gt_feature_markers_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>(
+      gt_feature_markers_topic_, output_qos);
+  }
 
   left_image_sub_ = std::make_shared<message_filters::Subscriber<sensor_msgs::msg::Image>>();
   right_image_sub_ = std::make_shared<message_filters::Subscriber<sensor_msgs::msg::Image>>();
@@ -101,6 +121,13 @@ IngestionNode::IngestionNode(const rclcpp::NodeOptions & options)
     std::bind(&IngestionNode::stereo_callback, this, std::placeholders::_1, std::placeholders::_2));
 
   initialize_pseudo_world_points();
+
+  if (publish_gt_feature_markers_ && gt_feature_markers_pub_) {
+    const auto period_ns = static_cast<int64_t>(1e9 / gt_feature_markers_publish_hz_);
+    gt_feature_markers_timer_ = this->create_timer(
+      std::chrono::nanoseconds{period_ns},
+      std::bind(&IngestionNode::gt_feature_markers_timer_callback, this));
+  }
 
   filter_.set_debug(debug_);
 }
@@ -128,15 +155,13 @@ void IngestionNode::imu_callback(sensor_msgs::msg::Imu::ConstSharedPtr msg)
       // IMU-first startup: if GT has not arrived yet, start from a neutral pose.
       filter_.initialize_from_pose(Eigen::Vector3d::Zero(), Eigen::Quaterniond::Identity());
     }
-  } else if (imu_history_.size() >= 2U) {
+  } else if (imu_history_.size() >= 2U) { //this would effectivly always be 2 and not more than 2
     const auto & prev = imu_history_[imu_history_.size() - 2U];
     const auto & curr = imu_history_[imu_history_.size() - 1U];
     filter_.predict_step(prev, curr);
     trim_imu_history(curr.stamp);
-  }
-
-  
-  drain_pending_stereo_frames_locked();
+    drain_pending_stereo_frames_locked();
+  } 
 }
 
 void IngestionNode::gt_pose_callback(geometry_msgs::msg::PoseStamped::ConstSharedPtr msg)
@@ -207,9 +232,11 @@ void IngestionNode::drain_pending_stereo_frames_locked()
   while (!pending_stereo_frame_stamps_.empty()) {
     const auto frame_stamp = pending_stereo_frame_stamps_.front();
     if (!try_process_stereo_frame(frame_stamp)) {
-      break;
+      break; //if the frame is not processed, break the loop
+    } else {
+      pending_stereo_frame_stamps_.pop_front();
     }
-    pending_stereo_frame_stamps_.pop_front();
+    
   }
 }
 
@@ -346,14 +373,22 @@ void IngestionNode::trim_gt_history(const rclcpp::Time & keep_after)
 
 void IngestionNode::initialize_pseudo_world_points()
 {
+  constexpr double kCylinderRadiusMeters = 6.0;
+  constexpr double kCylinderHeightMeters = 6.0;
+  constexpr double kGoldenAngleRad = 2.39996322972865332;
+  constexpr double kInvPhi = 0.61803398874989485;
+
   pseudo_world_points_.clear();
   pseudo_world_points_.reserve(static_cast<std::size_t>(pseudo_feature_count_));
   for (auto index = 0; index < pseudo_feature_count_; ++index) {
-    const auto ring = static_cast<double>(index / 4) + 1.0;
-    const auto column = static_cast<double>(index % 4) - 1.5;
-    const auto x = 0.5 * ring;
-    const auto y = 0.4 * column;
-    const auto z = 1.5 + 0.15 * std::sin(static_cast<double>(index));
+    const auto i = static_cast<double>(index);
+    const auto count = static_cast<double>(pseudo_feature_count_);
+    const auto u = std::fmod((i + 0.5) * kInvPhi, 1.0);
+    const auto radius = kCylinderRadiusMeters * std::sqrt(u);
+    const auto theta = kGoldenAngleRad * i;
+    const auto x = radius * std::cos(theta);
+    const auto y = radius * std::sin(theta);
+    const auto z = kCylinderHeightMeters * ((i + 0.5) / count);
     pseudo_world_points_.push_back(Eigen::Vector3d{x, y, z});
   }
 }
@@ -362,6 +397,53 @@ void IngestionNode::try_filter_update(
   const QnukfFilter::PseudoVisionMeasurement & pseudo_measurement)
 {
   filter_.update_pseudo_vision(pseudo_measurement, pseudo_noise_stddev_);
+}
+
+void IngestionNode::gt_feature_markers_timer_callback()
+{
+  publish_gt_feature_markers(this->now());
+}
+
+void IngestionNode::publish_gt_feature_markers(const rclcpp::Time & stamp)
+{
+  if (!gt_feature_markers_pub_ || pseudo_world_points_.empty()) {
+    return;    
+  }
+  visualization_msgs::msg::MarkerArray array;
+  visualization_msgs::msg::Marker marker;
+  marker.header.frame_id = "world";
+  marker.header.stamp = stamp;
+  marker.ns = "gt_pseudo_features";
+  marker.id = 0;
+  marker.type = visualization_msgs::msg::Marker::SPHERE_LIST;
+  marker.action = visualization_msgs::msg::Marker::ADD;
+  marker.pose.orientation.w = 1.0;
+  const double d = gt_feature_marker_diameter_;
+  marker.scale.x = d;
+  marker.scale.y = d;
+  marker.scale.z = d;
+  marker.lifetime.sec = 0;
+  marker.lifetime.nanosec = 0;
+  marker.points.reserve(pseudo_world_points_.size());
+  marker.colors.reserve(pseudo_world_points_.size());
+  const auto denom =
+    pseudo_world_points_.size() > 1U ? static_cast<double>(pseudo_world_points_.size() - 1U) : 1.0;
+  for (std::size_t i = 0; i < pseudo_world_points_.size(); ++i) {
+    geometry_msgs::msg::Point p;
+    p.x = pseudo_world_points_[i].x();
+    p.y = pseudo_world_points_[i].y();
+    p.z = pseudo_world_points_[i].z();
+    marker.points.push_back(p);
+    std_msgs::msg::ColorRGBA c;
+    const auto t = static_cast<float>(static_cast<double>(i) / denom);
+    c.r = 0.2F + 0.8F * t;
+    c.g = 0.9F;
+    c.b = 0.3F + 0.7F * (1.0F - t);
+    c.a = 1.0F;
+    marker.colors.push_back(c);
+  }
+  array.markers.push_back(marker);
+  gt_feature_markers_pub_->publish(array);
 }
 
 void IngestionNode::publish_filter_estimate(const rclcpp::Time & stamp)

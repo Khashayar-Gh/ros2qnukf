@@ -39,8 +39,12 @@
   <arg name="stereo_queue_max" default="512"/>
   <arg name="imu_history_sec" default="2.0"/>
   <arg name="gt_lookup_max_dt_sec" default="0.25"/>
-  <arg name="pseudo_feature_count" default="20"/>
+  <arg name="pseudo_feature_count" default="50"/>
   <arg name="pseudo_noise_stddev" default="0.02"/>
+  <arg name="publish_gt_feature_markers" default="true"/>
+  <arg name="gt_feature_markers_topic" default="/ros2qnukf/gt_feature_points"/>
+  <arg name="gt_feature_marker_diameter" default="0.12"/>
+  <arg name="gt_feature_markers_publish_hz" default="5.0"/>
   <arg name="use_stereo" default="true"/>
   <arg name="pseudo_pose_when_no_gt" default="false"/>
   <arg name="camera_qos_reliable" default="false"/>
@@ -65,6 +69,10 @@
     <param name="gt_lookup_max_dt_sec" value="$(var gt_lookup_max_dt_sec)"/>
     <param name="pseudo_feature_count" value="$(var pseudo_feature_count)"/>
     <param name="pseudo_noise_stddev" value="$(var pseudo_noise_stddev)"/>
+    <param name="publish_gt_feature_markers" value="$(var publish_gt_feature_markers)"/>
+    <param name="gt_feature_markers_topic" value="$(var gt_feature_markers_topic)"/>
+    <param name="gt_feature_marker_diameter" value="$(var gt_feature_marker_diameter)"/>
+    <param name="gt_feature_markers_publish_hz" value="$(var gt_feature_markers_publish_hz)"/>
     <param name="use_stereo" value="$(var use_stereo)"/>
     <param name="pseudo_pose_when_no_gt" value="$(var pseudo_pose_when_no_gt)"/>
     <param name="camera_qos_reliable" value="$(var camera_qos_reliable)"/>

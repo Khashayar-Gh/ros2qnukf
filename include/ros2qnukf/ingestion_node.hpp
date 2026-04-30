@@ -21,6 +21,7 @@
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/image.hpp>
 #include <sensor_msgs/msg/imu.hpp>
+#include <visualization_msgs/msg/marker_array.hpp>
 
 #include "ros2qnukf/qnukf_filter.hpp"
 
@@ -64,6 +65,8 @@ private:
   void initialize_pseudo_world_points();
   void try_filter_update(const QnukfFilter::PseudoVisionMeasurement & pseudo_measurement);
   void publish_filter_estimate(const rclcpp::Time & stamp);
+  void publish_gt_feature_markers(const rclcpp::Time & stamp);
+  void gt_feature_markers_timer_callback();
 
   rclcpp::QoS build_sensor_qos(int depth) const;
 
@@ -82,12 +85,16 @@ private:
   double gt_lookup_max_dt_sec_{0.25}; //allow observed ~0.2s image-to-GT timestamp skew
   double imu_history_sec_{2.0};
   double pseudo_noise_stddev_{0.01};
-  int pseudo_feature_count_{20};
+  int pseudo_feature_count_{50};
   int stereo_sync_queue_size_{15};
   int stereo_queue_max_{512};
   double path_publish_period_sec_{0.0};
   bool pseudo_pose_when_no_gt_{false};
   bool camera_qos_reliable_{false};
+  bool publish_gt_feature_markers_{true};
+  double gt_feature_marker_diameter_{0.12};
+  double gt_feature_markers_publish_hz_{5.0};
+  std::string gt_feature_markers_topic_{"/ros2qnukf/gt_feature_points"};
 
   std::mutex data_mutex_{};
   QnukfFilter filter_{};
@@ -106,6 +113,8 @@ private:
   rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr estimate_pose_pub_{};
   rclcpp::Publisher<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr estimate_pose_cov_pub_{};
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr estimate_path_pub_{};
+  rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr gt_feature_markers_pub_{};
+  rclcpp::TimerBase::SharedPtr gt_feature_markers_timer_{};
   nav_msgs::msg::Path estimate_path_msg_{};
   std::shared_ptr<message_filters::Subscriber<sensor_msgs::msg::Image>> left_image_sub_{};
   std::shared_ptr<message_filters::Subscriber<sensor_msgs::msg::Image>> right_image_sub_{};

@@ -20,6 +20,8 @@ find_package(message_filters REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
+find_package(std_msgs REQUIRED)
+find_package(visualization_msgs REQUIRED)
 
 add_executable(ros2qnukf_ingestion_node
   src/ingestion_main.cpp
@@ -48,6 +50,8 @@ ament_target_dependencies(ros2qnukf_ingestion_node
   nav_msgs
   rclcpp
   sensor_msgs
+  std_msgs
+  visualization_msgs
 )
 
 ament_target_dependencies(ros2qnukf_gt_csv_publisher

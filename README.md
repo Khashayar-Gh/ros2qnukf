@@ -81,6 +81,7 @@ This avoids loosening time alignment while handling IMU/image callback ordering 
 
 - **Nominal state (16-D vector internally):** orientation quaternion, position, velocity, gyro bias, accel bias.
 - **Error state:** **15** dimensions (standard IMU navigation error parametrization).
+- **Initial covariance `P0` (on `initialize_from_pose`):** block-diagonal `diag(900·I₃, 60·I₃, 10·I₃, 0, 0)` on attitude, position, velocity, gyro bias, accel bias—same as `DeepUKF-VIN/QUKF_main3.py` `P0` (zero blocks for both bias subspaces).
 - **Prediction:** Unscented transform on IMU kinematics; **augmented state** (**21**-D error) carries gyro/accel noise terms for stochastic propagation (`kAugmentedDim` / `kAugmentedErrorDim` in code). Quaternion mean uses weighted averaging after sigma propagation.
 - **Pseudo vision update:** Full UKF measurement update mirrored from DeepUKF-VIN: transform each predicted sigma state through pseudo-vision measurement model, compute **`zhat`**, **`Pz`**, **`Pxz`**, then apply **`K = Pxz * pinv(Pz)`** with covariance update **`P = P - K * Pz * K^T`**. **`pseudo_feature_count`** controls how many points participate.
 - **Noise / UKF tuning** (defaults in `qnukf_filter.hpp`): gyro/accel measurement noise, bias random walk, gravity magnitude, **`ukf_alpha` / `ukf_beta` / `ukf_kappa`**. Matrix invariants in the UKF core now fail fast via exceptions instead of falling back to permissive numerics.
@@ -193,6 +194,7 @@ ros2 topic echo /ros2qnukf/pose_estimate --once
 | `sensor_qos_depth` | `10` | Subscriber history depth for sensor QoS. |
 | `path_publish_period_sec` | `0` | Path publish throttle (pose still every successful update). |
 | `pseudo_feature_count`, `pseudo_noise_stddev` | `20`, `0.02` | Pseudo measurement count / noise scale. |
+| `publish_gt_feature_markers`, `gt_feature_markers_topic`, `gt_feature_marker_diameter`, `gt_feature_markers_publish_hz` | `true`, `/ros2qnukf/gt_feature_points`, `0.12`, `5.0` | Fixed landmarks published on a **ROS timer** (default 5 Hz), independent of stereo / filter; uses node clock (`use_sim_time` OK). Disable with `publish_gt_feature_markers:=false`. |
 | `imu_history_sec` | `2.0` | GT history trim horizon (`gt_history_` retention window). IMU history trim is consumption-based (drop all samples older than newest predicted sample). |
 | `gt_lookup_max_dt_sec` | `0.25` | GT history trim horizon. |
 | `pseudo_pose_when_no_gt` | `false` | If **true**, when no GT pose is available at frame time the node uses **current filter state** as the synthetic “GT” for pseudo vision (IMU/smoke-test only; not for benchmark accuracy). |
@@ -221,6 +223,7 @@ Interpolation uses **two neighboring GT samples** when available; with **one** G
 |-------|------|--------|
 | `estimate_pose_topic` | `geometry_msgs/msg/PoseStamped` | Filter pose. |
 | `estimate_path_topic` | `nav_msgs/msg/Path` | Trajectory; may be throttled. |
+| `gt_feature_markers_topic` (see params) | `visualization_msgs/msg/MarkerArray` | **Noise-free** synthetic `pseudo_world_points_` in **`world`** (SPHERE_LIST); republished on **`gt_feature_markers_publish_hz`** timer, not on filter updates. |
 | `gt_aligned_pose_topic` | `geometry_msgs/msg/PoseStamped` | Published by optional initial realign node when enabled. |
 | `gt_aligned_path_topic` | `nav_msgs/msg/Path` | Aligned GT trajectory in estimate frame. |
 

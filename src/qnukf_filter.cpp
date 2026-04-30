@@ -9,12 +9,15 @@
 #include <Eigen/Eigenvalues>
 #include <Eigen/SVD>
 #include <unsupported/Eigen/MatrixFunctions>
+#include <rclcpp/logging.hpp>
 
 namespace ros2qnukf
 {
 
 namespace
 {
+
+const auto kFilterLogger = rclcpp::get_logger("ros2qnukf.qnukf_filter");
 
 Eigen::Quaterniond quaternion_cleanup(Eigen::Quaterniond q);
 
@@ -163,8 +166,13 @@ void QnukfFilter::initialize_from_pose(
   velocity_.setZero();
   gyro_bias_.setZero();
   accel_bias_.setZero();
-  covariance_.setIdentity();
-  covariance_ *= 1e-2;
+  // Match DeepUKF-VIN/QUKF_main3.py: block_diag(eye(3)*900, eye(3)*60, eye(3)*10, zeros, zeros).
+  covariance_.setZero();
+  covariance_.block<3, 3>(0, 0) = Eigen::Matrix3d::Identity() * .1; // q
+  covariance_.block<3, 3>(3, 3) = Eigen::Matrix3d::Identity() * .1; // p
+  covariance_.block<3, 3>(6, 6) = Eigen::Matrix3d::Identity() * .1; // v
+  covariance_.block<6, 6>(9, 9) = Eigen::Matrix<double, 6, 6>::Identity() * 0.1;  // gyro + accel bias
+  // covariance_.setIdentity();
   predicted_sigma_points_valid_ = false;
 }
 
@@ -319,8 +327,12 @@ void QnukfFilter::update_pseudo_vision(
   if (feature_count == 0) {
     throw std::runtime_error("PseudoVision update called with zero features.");
   }
-  if (!predicted_sigma_points_valid_ || predicted_sigma_points_.cols() != ukf_sigma_count_) {
-    throw std::runtime_error("Predicted sigma points are invalid or incorrectly sized in PseudoVision update.");
+  if (!predicted_sigma_points_valid_) {
+    RCLCPP_DEBUG(kFilterLogger, "Not updating: predicted sigma points are not valid.");
+    return;
+  }
+  if (predicted_sigma_points_.cols() != ukf_sigma_count_) {
+    throw std::runtime_error("Predicted sigma points are incorrectly sized in PseudoVision update.");
   }
 
   const auto dim_z = static_cast<int>(feature_count * 3);

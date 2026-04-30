@@ -40,6 +40,15 @@ Visualization Manager:
       Unreliable: false
       Color: 255; 120; 0
       Buffer Length: 1
+    - Class: rviz_default_plugins/MarkerArray
+      Name: GT pseudo feature points (world)
+      Enabled: true
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /ros2qnukf/gt_feature_points
     - Class: rviz_default_plugins/Path
       Name: GT Path (Aligned)
       Enabled: true
