@@ -40,7 +40,18 @@ public:
     Eigen::Vector3d accel_bias{Eigen::Vector3d::Zero()};
   };
 
-  void initialize_from_pose(const Eigen::Vector3d & position, const Eigen::Quaterniond & orientation);
+  void initialize_from_pose(
+    const Eigen::Vector3d & position,
+    const Eigen::Quaterniond & orientation,
+    const Eigen::Vector3d & gyro_bias = Eigen::Vector3d::Zero(),
+    const Eigen::Vector3d & accel_bias = Eigen::Vector3d::Zero());
+  void set_process_noise_params(
+    double gyro_noise_stddev,
+    double accel_noise_stddev,
+    double gyro_bias_rw_stddev,
+    double accel_bias_rw_stddev);
+  void set_initial_covariance_diagonal(
+    const Eigen::Matrix<double, 15, 1> & diagonal);
   [[nodiscard]] bool initialized() const noexcept;
 
   void predict_batch(const std::vector<ImuMeasurement> & imu_batch);
@@ -110,6 +121,13 @@ private:
   Eigen::Vector3d gyro_bias_{Eigen::Vector3d::Zero()};
   Eigen::Vector3d accel_bias_{Eigen::Vector3d::Zero()};
   Eigen::Matrix<double, 15, 15> covariance_{Eigen::Matrix<double, 15, 15>::Identity() * 1e-2};
+  Eigen::Matrix<double, 15, 1> initial_covariance_diagonal_{
+    (Eigen::Matrix<double, 15, 1>() <<
+      1e-1, 1e-1, 1e-1,
+      1e-1, 1e-1, 1e-1,
+      1e-1, 1e-1, 1e-1,
+      1e-1, 1e-1, 1e-1,
+      1e-1, 1e-1, 1e-1).finished()};
 
   double gravity_magnitude_{9.81};
   // OpenVINS continuous-time defaults discretized for 200 Hz (dt = 0.005 s).

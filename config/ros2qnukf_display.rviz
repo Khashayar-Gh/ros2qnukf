@@ -49,6 +49,15 @@ Visualization Manager:
         History Policy: Keep Last
         Reliability Policy: Reliable
         Value: /ros2qnukf/gt_feature_points
+    - Class: rviz_default_plugins/MarkerArray
+      Name: Pseudo measurements (GT frame)
+      Enabled: true
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /ros2qnukf/pseudo_measurements_gt
     - Class: rviz_default_plugins/Path
       Name: GT Path (Aligned)
       Enabled: true

@@ -66,6 +66,10 @@ private:
   void try_filter_update(const QnukfFilter::PseudoVisionMeasurement & pseudo_measurement);
   void publish_filter_estimate(const rclcpp::Time & stamp);
   void publish_gt_feature_markers(const rclcpp::Time & stamp);
+  void publish_pseudo_measurement_markers_gt_frame(
+    const rclcpp::Time & stamp,
+    const QnukfFilter::PseudoVisionMeasurement & pseudo_measurement,
+    const GtPoseMeasurement & gt_pose);
   void gt_feature_markers_timer_callback();
 
   rclcpp::QoS build_sensor_qos(int depth) const;
@@ -95,6 +99,21 @@ private:
   double gt_feature_marker_diameter_{0.12};
   double gt_feature_markers_publish_hz_{5.0};
   std::string gt_feature_markers_topic_{"/ros2qnukf/gt_feature_points"};
+  bool publish_pseudo_measurement_markers_{true};
+  double pseudo_measurement_marker_diameter_{0.08};
+  std::string pseudo_measurement_markers_topic_{"/ros2qnukf/pseudo_measurements_gt"};
+  bool init_bias_from_gt_csv_{true};
+  std::string path_gt_csv_{};
+  double gyro_noise_stddev_{2.399e-3};
+  double accel_noise_stddev_{2.828e-2};
+  double gyro_bias_rw_stddev_{1.371e-6};
+  double accel_bias_rw_stddev_{2.121e-4};
+  std::vector<double> initial_covariance_diagonal_{
+    1e-1, 1e-1, 1e-1, 1e-1, 1e-1,
+    1e-1, 1e-1, 1e-1, 1e-1, 1e-1,
+    1e-1, 1e-1, 1e-1, 1e-1, 1e-1};
+  Eigen::Vector3d initial_gyro_bias_{Eigen::Vector3d::Zero()};
+  Eigen::Vector3d initial_accel_bias_{Eigen::Vector3d::Zero()};
 
   std::mutex data_mutex_{};
   QnukfFilter filter_{};
@@ -114,6 +133,7 @@ private:
   rclcpp::Publisher<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr estimate_pose_cov_pub_{};
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr estimate_path_pub_{};
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr gt_feature_markers_pub_{};
+  rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr pseudo_measurement_markers_pub_{};
   rclcpp::TimerBase::SharedPtr gt_feature_markers_timer_{};
   nav_msgs::msg::Path estimate_path_msg_{};
   std::shared_ptr<message_filters::Subscriber<sensor_msgs::msg::Image>> left_image_sub_{};

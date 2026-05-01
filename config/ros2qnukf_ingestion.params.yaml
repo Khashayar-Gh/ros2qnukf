@@ -1,0 +1,23 @@
+ros2qnukf_ingestion:
+  ros__parameters:
+    gyro_noise_stddev: 0.002399
+    accel_noise_stddev: 0.02828
+    gyro_bias_rw_stddev: 0.000001371
+    accel_bias_rw_stddev: 0.0002121
+    pseudo_noise_stddev: 0.1
+    initial_covariance_diagonal:
+      - 1.0e0 # r1
+      - 1.0e0
+      - 1.0e0
+      - 1.0e0 # p1
+      - 1.0e0
+      - 1.0e0
+      - 1.0e0 # v1
+      - 1.0e0
+      - 1.0e0
+      - 1.0e0 # gyro bias 1
+      - 1.0e0
+      - 1.0e0
+      - 1.0e0 # accel bias 1
+      - 1.0e0
+      - 1.0e0

@@ -3,8 +3,10 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <fstream>
 #include <functional>
 #include <random>
+#include <sstream>
 #include <stdexcept>
 
 #include <geometry_msgs/msg/point.hpp>
@@ -13,6 +15,52 @@
 
 namespace ros2qnukf
 {
+
+namespace
+{
+
+std::optional<std::pair<Eigen::Vector3d, Eigen::Vector3d>> read_bias_means_from_gt_csv(
+  const std::string & csv_path)
+{
+  std::ifstream file(csv_path);
+  if (!file.is_open()) {
+    return std::nullopt;
+  }
+
+  Eigen::Vector3d gyro_bias_sum = Eigen::Vector3d::Zero();
+  Eigen::Vector3d accel_bias_sum = Eigen::Vector3d::Zero();
+  std::size_t sample_count = 0U;
+  std::string line;
+  while (std::getline(file, line)) {
+    if (line.empty() || line.front() == '#') {
+      continue;
+    }
+    std::istringstream stream(line);
+    std::string field;
+    std::vector<double> values;
+    values.reserve(20);
+    while (std::getline(stream, field, ',')) {
+      if (field.empty()) {
+        continue;
+      }
+      values.push_back(std::atof(field.c_str()));
+    }
+    // EuRoC/OpenVINS CSV: [t, p(3), q(4), v(3), b_w(3), b_a(3), ...]
+    if (values.size() < 17) {
+      continue;
+    }
+    gyro_bias_sum += Eigen::Vector3d{values[11], values[12], values[13]};
+    accel_bias_sum += Eigen::Vector3d{values[14], values[15], values[16]};
+    ++sample_count;
+  }
+  if (sample_count == 0U) {
+    return std::nullopt;
+  }
+  const auto inv_count = 1.0 / static_cast<double>(sample_count);
+  return std::make_pair(gyro_bias_sum * inv_count, accel_bias_sum * inv_count);
+}
+
+}  // namespace
 
 IngestionNode::IngestionNode(const rclcpp::NodeOptions & options)
 : rclcpp::Node{"ros2qnukf_ingestion_node", options}
@@ -62,9 +110,29 @@ IngestionNode::IngestionNode(const rclcpp::NodeOptions & options)
     this->declare_parameter<bool>("publish_gt_feature_markers", publish_gt_feature_markers_);
   gt_feature_markers_topic_ =
     this->declare_parameter<std::string>("gt_feature_markers_topic", gt_feature_markers_topic_);
+  publish_pseudo_measurement_markers_ = this->declare_parameter<bool>(
+    "publish_pseudo_measurement_markers", publish_pseudo_measurement_markers_);
+  pseudo_measurement_markers_topic_ = this->declare_parameter<std::string>(
+    "pseudo_measurement_markers_topic", pseudo_measurement_markers_topic_);
+  init_bias_from_gt_csv_ = this->declare_parameter<bool>("init_bias_from_gt_csv", init_bias_from_gt_csv_);
+  path_gt_csv_ = this->declare_parameter<std::string>("path_gt_csv", path_gt_csv_);
+  gyro_noise_stddev_ = this->declare_parameter<double>("gyro_noise_stddev", gyro_noise_stddev_);
+  accel_noise_stddev_ = this->declare_parameter<double>("accel_noise_stddev", accel_noise_stddev_);
+  gyro_bias_rw_stddev_ = this->declare_parameter<double>("gyro_bias_rw_stddev", gyro_bias_rw_stddev_);
+  accel_bias_rw_stddev_ = this->declare_parameter<double>("accel_bias_rw_stddev", accel_bias_rw_stddev_);
+  initial_covariance_diagonal_ = this->declare_parameter<std::vector<double>>(
+    "initial_covariance_diagonal", initial_covariance_diagonal_);
+  if (initial_covariance_diagonal_.size() != 15U) {
+    throw std::invalid_argument("Parameter initial_covariance_diagonal must have exactly 15 values.");
+  }
   gt_feature_marker_diameter_ = std::max(
     1e-6,
     this->declare_parameter<double>("gt_feature_marker_diameter", gt_feature_marker_diameter_));
+  pseudo_measurement_marker_diameter_ = std::max(
+    1e-6,
+    this->declare_parameter<double>(
+      "pseudo_measurement_marker_diameter",
+      pseudo_measurement_marker_diameter_));
   gt_feature_markers_publish_hz_ = std::clamp(
     this->declare_parameter<double>("gt_feature_markers_publish_hz", gt_feature_markers_publish_hz_),
     0.1,
@@ -79,6 +147,16 @@ IngestionNode::IngestionNode(const rclcpp::NodeOptions & options)
   const auto output_qos = rclcpp::QoS(rclcpp::KeepLast(sensor_qos_depth_))
     .reliable()
     .durability_volatile();
+  Eigen::Matrix<double, 15, 1> initial_covariance_diag_eigen;
+  for (std::size_t idx = 0U; idx < initial_covariance_diagonal_.size(); ++idx) {
+    initial_covariance_diag_eigen(static_cast<Eigen::Index>(idx)) = initial_covariance_diagonal_[idx];
+  }
+  filter_.set_process_noise_params(
+    gyro_noise_stddev_,
+    accel_noise_stddev_,
+    gyro_bias_rw_stddev_,
+    accel_bias_rw_stddev_);
+  filter_.set_initial_covariance_diagonal(initial_covariance_diag_eigen);
 
   imu_sub_ = this->create_subscription<sensor_msgs::msg::Imu>(
     imu_topic_,
@@ -108,6 +186,10 @@ IngestionNode::IngestionNode(const rclcpp::NodeOptions & options)
     gt_feature_markers_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>(
       gt_feature_markers_topic_, output_qos);
   }
+  if (publish_pseudo_measurement_markers_) {
+    pseudo_measurement_markers_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>(
+      pseudo_measurement_markers_topic_, output_qos);
+  }
 
   left_image_sub_ = std::make_shared<message_filters::Subscriber<sensor_msgs::msg::Image>>();
   right_image_sub_ = std::make_shared<message_filters::Subscriber<sensor_msgs::msg::Image>>();
@@ -121,6 +203,24 @@ IngestionNode::IngestionNode(const rclcpp::NodeOptions & options)
     std::bind(&IngestionNode::stereo_callback, this, std::placeholders::_1, std::placeholders::_2));
 
   initialize_pseudo_world_points();
+
+  if (init_bias_from_gt_csv_ && !path_gt_csv_.empty()) {
+    const auto means = read_bias_means_from_gt_csv(path_gt_csv_);
+    if (means.has_value()) {
+      initial_gyro_bias_ = means->first;
+      initial_accel_bias_ = means->second;
+      RCLCPP_INFO(
+        this->get_logger(),
+        "Initialized bias means from GT CSV. bw=[%.6f %.6f %.6f], ba=[%.6f %.6f %.6f]",
+        initial_gyro_bias_.x(), initial_gyro_bias_.y(), initial_gyro_bias_.z(),
+        initial_accel_bias_.x(), initial_accel_bias_.y(), initial_accel_bias_.z());
+    } else {
+      RCLCPP_WARN(
+        this->get_logger(),
+        "Failed to compute bias means from GT CSV '%s'; using zero init biases.",
+        path_gt_csv_.c_str());
+    }
+  }
 
   if (publish_gt_feature_markers_ && gt_feature_markers_pub_) {
     const auto period_ns = static_cast<int64_t>(1e9 / gt_feature_markers_publish_hz_);
@@ -150,10 +250,18 @@ void IngestionNode::imu_callback(sensor_msgs::msg::Imu::ConstSharedPtr msg)
   if (!filter_.initialized()) {
     const auto gt_pose = lookup_gt_pose_interpolated(measurement.stamp);
     if (gt_pose.has_value()) {
-      filter_.initialize_from_pose(gt_pose->position, gt_pose->orientation);
+      filter_.initialize_from_pose(
+        gt_pose->position,
+        gt_pose->orientation,
+        initial_gyro_bias_,
+        initial_accel_bias_);
     } else {
       // IMU-first startup: if GT has not arrived yet, start from a neutral pose.
-      filter_.initialize_from_pose(Eigen::Vector3d::Zero(), Eigen::Quaterniond::Identity());
+      filter_.initialize_from_pose(
+        Eigen::Vector3d::Zero(),
+        Eigen::Quaterniond::Identity(),
+        initial_gyro_bias_,
+        initial_accel_bias_);
     }
   } else if (imu_history_.size() >= 2U) { //this would effectivly always be 2 and not more than 2
     const auto & prev = imu_history_[imu_history_.size() - 2U];
@@ -247,7 +355,8 @@ bool IngestionNode::try_process_stereo_frame(const rclcpp::Time & frame_stamp)
   }
 
   if (imu_history_.empty()) {
-    return false;
+    throw std::runtime_error(
+      "IMU history is empty. Cannot process stereo frame.");
   }
 
   const auto target_imu_stamp = frame_stamp + rclcpp::Duration::from_seconds(cam_to_imu_dt_sec_);
@@ -266,9 +375,14 @@ bool IngestionNode::try_process_stereo_frame(const rclcpp::Time & frame_stamp)
     pseudo_gt.position = filter_state.position;
     pseudo_gt.orientation = filter_state.orientation;
     gt_pose = pseudo_gt;
+  RCLCPP_INFO(
+    this->get_logger(), 
+    "No GT pose found at stamp %.6f, using pseudo pose from filter state.",
+    frame_stamp.seconds());
   }
 
   const auto pseudo_measurement = build_pseudo_vision_measurement(*gt_pose);
+  publish_pseudo_measurement_markers_gt_frame(frame_stamp, pseudo_measurement, *gt_pose);
 
   try_filter_update(pseudo_measurement);
   publish_filter_estimate(frame_stamp);
@@ -444,6 +558,62 @@ void IngestionNode::publish_gt_feature_markers(const rclcpp::Time & stamp)
   }
   array.markers.push_back(marker);
   gt_feature_markers_pub_->publish(array);
+}
+
+void IngestionNode::publish_pseudo_measurement_markers_gt_frame(
+  const rclcpp::Time & stamp,
+  const QnukfFilter::PseudoVisionMeasurement & pseudo_measurement,
+  const GtPoseMeasurement & gt_pose)
+{
+  if (!publish_pseudo_measurement_markers_ || !pseudo_measurement_markers_pub_) {
+    return;
+  }
+  if (pseudo_measurement.body_points.empty()) {
+    return;
+  }
+
+  visualization_msgs::msg::MarkerArray array;
+  visualization_msgs::msg::Marker marker;
+  marker.header.frame_id = "world";
+  marker.header.stamp = stamp;
+  marker.ns = "pseudo_measurements_gt_frame";
+  marker.id = 0;
+  marker.type = visualization_msgs::msg::Marker::SPHERE_LIST;
+  marker.action = visualization_msgs::msg::Marker::ADD;
+  marker.pose.orientation.w = 1.0;
+  marker.scale.x = pseudo_measurement_marker_diameter_;
+  marker.scale.y = pseudo_measurement_marker_diameter_;
+  marker.scale.z = pseudo_measurement_marker_diameter_;
+  marker.lifetime.sec = 0;
+  marker.lifetime.nanosec = 0;
+  marker.points.reserve(pseudo_measurement.body_points.size());
+  marker.colors.reserve(pseudo_measurement.body_points.size());
+
+  const auto rotation_body_to_world = gt_pose.orientation.toRotationMatrix();
+  const auto denom =
+    pseudo_measurement.body_points.size() > 1U
+      ? static_cast<double>(pseudo_measurement.body_points.size() - 1U)
+      : 1.0;
+  for (std::size_t i = 0; i < pseudo_measurement.body_points.size(); ++i) {
+    const Eigen::Vector3d point_world =
+      rotation_body_to_world * pseudo_measurement.body_points[i] + gt_pose.position;
+    geometry_msgs::msg::Point p;
+    p.x = point_world.x();
+    p.y = point_world.y();
+    p.z = point_world.z();
+    marker.points.push_back(p);
+
+    std_msgs::msg::ColorRGBA c;
+    const auto t = static_cast<float>(static_cast<double>(i) / denom);
+    c.r = 1.0F;
+    c.g = 0.35F + 0.5F * (1.0F - t);
+    c.b = 0.1F + 0.8F * t;
+    c.a = 1.0F;
+    marker.colors.push_back(c);
+  }
+
+  array.markers.push_back(marker);
+  pseudo_measurement_markers_pub_->publish(array);
 }
 
 void IngestionNode::publish_filter_estimate(const rclcpp::Time & stamp)

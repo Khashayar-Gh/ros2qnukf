@@ -157,23 +157,46 @@ QnukfFilter::QnukfFilter()
 
 void QnukfFilter::initialize_from_pose(
   const Eigen::Vector3d & position,
-  const Eigen::Quaterniond & orientation)
+  const Eigen::Quaterniond & orientation,
+  const Eigen::Vector3d & gyro_bias,
+  const Eigen::Vector3d & accel_bias)
 {
   initialized_ = true;
   orientation_ = orientation;
   orientation_.normalize();
   position_ = position;
   velocity_.setZero();
-  gyro_bias_.setZero();
-  accel_bias_.setZero();
-  // Match DeepUKF-VIN/QUKF_main3.py: block_diag(eye(3)*900, eye(3)*60, eye(3)*10, zeros, zeros).
+  gyro_bias_ = gyro_bias;
+  accel_bias_ = accel_bias;
   covariance_.setZero();
-  covariance_.block<3, 3>(0, 0) = Eigen::Matrix3d::Identity() * .1; // q
-  covariance_.block<3, 3>(3, 3) = Eigen::Matrix3d::Identity() * .1; // p
-  covariance_.block<3, 3>(6, 6) = Eigen::Matrix3d::Identity() * .1; // v
-  covariance_.block<6, 6>(9, 9) = Eigen::Matrix<double, 6, 6>::Identity() * 0.1;  // gyro + accel bias
-  // covariance_.setIdentity();
+  covariance_.diagonal() = initial_covariance_diagonal_;
   predicted_sigma_points_valid_ = false;
+}
+
+void QnukfFilter::set_process_noise_params(
+  const double gyro_noise_stddev,
+  const double accel_noise_stddev,
+  const double gyro_bias_rw_stddev,
+  const double accel_bias_rw_stddev)
+{
+  if (gyro_noise_stddev < 0.0 || accel_noise_stddev < 0.0 ||
+    gyro_bias_rw_stddev < 0.0 || accel_bias_rw_stddev < 0.0)
+  {
+    throw std::invalid_argument("Noise stddev parameters must be non-negative.");
+  }
+  gyro_noise_stddev_ = gyro_noise_stddev;
+  accel_noise_stddev_ = accel_noise_stddev;
+  gyro_bias_rw_stddev_ = gyro_bias_rw_stddev;
+  accel_bias_rw_stddev_ = accel_bias_rw_stddev;
+}
+
+void QnukfFilter::set_initial_covariance_diagonal(
+  const Eigen::Matrix<double, 15, 1> & diagonal)
+{
+  if ((diagonal.array() < 0.0).any()) {
+    throw std::invalid_argument("Initial covariance diagonal must be non-negative.");
+  }
+  initial_covariance_diagonal_ = diagonal;
 }
 
 bool QnukfFilter::initialized() const noexcept

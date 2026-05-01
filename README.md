@@ -140,6 +140,7 @@ Common launch arguments:
 | `dataset` | Folder name appended if you customize `bag_path` around it (default `V2_01_easy`). |
 | `bag_path` | Full path to the ROS 2 bag directory. |
 | `bag_rate`, `bag_start` | Playback rate and start offset (seconds). |
+| `params_file` | Ingestion node YAML parameter file (default `config/ros2qnukf_ingestion.params.yaml`). |
 | `bag_enable` | `false` to skip `ros2 bag play` (bring your own publishers / clock). |
 | `use_sim_time` | Keep **`true`** for bag playback with `/clock`. |
 | `rviz_enable` | `false` to skip RViz. |
@@ -147,6 +148,7 @@ Common launch arguments:
 | `gt_from_csv_enable` | Launch built-in GT CSV publisher (`/ov_msckf/posegt`, `/ov_msckf/pathgt`). |
 | `path_gt_csv` | GT CSV path (default OpenVINS EuRoC CSV using `dataset`). |
 | `gt_csv_publish_rate_hz` | GT CSV publish rate in Hz. |
+| `init_bias_from_gt_csv` | If true, initialize filter `b_w`/`b_a` from GT CSV dataset means (`b_w_*`, `b_a_*`). |
 | `path_publish_period_sec` | Path throttle; **`0`** = every pose update. |
 | `stereo_queue_max` | Max pending stereo timestamps (default **512**). |
 | `estimate_pose_cov_topic` | PoseWithCovariance output topic, used by GT realign helper node. |
@@ -187,6 +189,9 @@ ros2 topic echo /ros2qnukf/pose_estimate --once
 | `imu_topic`, `left_image_topic`, `right_image_topic` | EuRoC-style (`/imu0`, `/cam0/image_raw`, `/cam1/image_raw`) | Inputs. |
 | `gt_pose_topic`, `gt_transform_topic` | See launch | GT merged into one history for interpolation + pseudo measurement. |
 | `gt_from_csv_enable`, `path_gt_csv`, `gt_path_topic`, `gt_csv_publish_rate_hz` | `true`, OpenVINS EuRoC CSV default, `/ov_msckf/pathgt`, `60.0` | Optional GT source when bag has no GT topic. |
+| `init_bias_from_gt_csv` | `true` | Mirrors DeepUKF-VIN init style by setting initial IMU biases from GT CSV means when CSV is available. |
+| `gyro_noise_stddev`, `accel_noise_stddev`, `gyro_bias_rw_stddev`, `accel_bias_rw_stddev` | `2.399e-3`, `2.828e-2`, `1.371e-6`, `2.121e-4` | QNUKF process-noise terms (from YAML by default). |
+| `initial_covariance_diagonal` | 15x `0.1` | Initial 15D state covariance diagonal used on filter initialization. |
 | `estimate_pose_topic`, `estimate_pose_cov_topic`, `estimate_path_topic` | `/ros2qnukf/pose_estimate`, `/ros2qnukf/pose_estimate_cov`, `/ros2qnukf/path_estimate` | Outputs. |
 | `cam_to_imu_dt_sec` | `0` | **`t_imu_target = frame_stamp + dt`** for the IMU coverage check. |
 | `stereo_queue_max` | `512` | Max queued frame timestamps. |
@@ -195,6 +200,7 @@ ros2 topic echo /ros2qnukf/pose_estimate --once
 | `path_publish_period_sec` | `0` | Path publish throttle (pose still every successful update). |
 | `pseudo_feature_count`, `pseudo_noise_stddev` | `20`, `0.02` | Pseudo measurement count / noise scale. |
 | `publish_gt_feature_markers`, `gt_feature_markers_topic`, `gt_feature_marker_diameter`, `gt_feature_markers_publish_hz` | `true`, `/ros2qnukf/gt_feature_points`, `0.12`, `5.0` | Fixed landmarks published on a **ROS timer** (default 5 Hz), independent of stereo / filter; uses node clock (`use_sim_time` OK). Disable with `publish_gt_feature_markers:=false`. |
+| `publish_pseudo_measurement_markers`, `pseudo_measurement_markers_topic`, `pseudo_measurement_marker_diameter` | `true`, `/ros2qnukf/pseudo_measurements_gt`, `0.08` | Per-stereo pseudo measurements (`body_points`) transformed to `world` using interpolated GT pose for RViz inspection of update inputs in GT frame. |
 | `imu_history_sec` | `2.0` | GT history trim horizon (`gt_history_` retention window). IMU history trim is consumption-based (drop all samples older than newest predicted sample). |
 | `gt_lookup_max_dt_sec` | `0.25` | GT history trim horizon. |
 | `pseudo_pose_when_no_gt` | `false` | If **true**, when no GT pose is available at frame time the node uses **current filter state** as the synthetic “GT” for pseudo vision (IMU/smoke-test only; not for benchmark accuracy). |
@@ -224,6 +230,7 @@ Interpolation uses **two neighboring GT samples** when available; with **one** G
 | `estimate_pose_topic` | `geometry_msgs/msg/PoseStamped` | Filter pose. |
 | `estimate_path_topic` | `nav_msgs/msg/Path` | Trajectory; may be throttled. |
 | `gt_feature_markers_topic` (see params) | `visualization_msgs/msg/MarkerArray` | **Noise-free** synthetic `pseudo_world_points_` in **`world`** (SPHERE_LIST); republished on **`gt_feature_markers_publish_hz`** timer, not on filter updates. |
+| `pseudo_measurement_markers_topic` (see params) | `visualization_msgs/msg/MarkerArray` | Pseudo measurement points projected into `world` from `body_points` with interpolated GT pose each successful stereo update. |
 | `gt_aligned_pose_topic` | `geometry_msgs/msg/PoseStamped` | Published by optional initial realign node when enabled. |
 | `gt_aligned_path_topic` | `nav_msgs/msg/Path` | Aligned GT trajectory in estimate frame. |
 
