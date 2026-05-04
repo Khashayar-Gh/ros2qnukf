@@ -4,7 +4,7 @@ ros2qnukf_ingestion:
     accel_noise_stddev: 0.02828
     gyro_bias_rw_stddev: 0.000001371
     accel_bias_rw_stddev: 0.0002121
-    pseudo_noise_stddev: 0.1
+    pseudo_noise_stddev: 1.0e0
     initial_covariance_diagonal:
       - 1.0e0 # r1
       - 1.0e0

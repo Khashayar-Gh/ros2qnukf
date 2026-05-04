@@ -1,8 +1,11 @@
 #include "ros2qnukf/ingestion_node.hpp"
+#include "ros2qnukf/quaternion_utils.hpp"
 
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cctype>
+#include <cstdint>
 #include <fstream>
 #include <functional>
 #include <random>
@@ -60,7 +63,128 @@ std::optional<std::pair<Eigen::Vector3d, Eigen::Vector3d>> read_bias_means_from_
   return std::make_pair(gyro_bias_sum * inv_count, accel_bias_sum * inv_count);
 }
 
+void trim_string(std::string & s)
+{
+  const auto not_space = [](unsigned char c) { return !std::isspace(c); };
+  s.erase(s.begin(), std::find_if(s.begin(), s.end(), not_space));
+  s.erase(std::find_if(s.rbegin(), s.rend(), not_space).base(), s.end());
+}
+
 }  // namespace
+
+std::vector<IngestionNode::GtPoseMeasurement> IngestionNode::load_gt_csv_trajectory(
+  const std::string & csv_path)
+{
+  std::ifstream file(csv_path);
+  if (!file.is_open()) {
+    throw std::runtime_error("Cannot open GT CSV file: " + csv_path);
+  }
+
+  std::vector<GtPoseMeasurement> out;
+  std::string line;
+  while (std::getline(file, line)) {
+    if (line.empty() || line.front() == '#') {
+      continue;
+    }
+    const auto comma = line.find(',');
+    if (comma == std::string::npos) {
+      continue;
+    }
+    std::string ts_str = line.substr(0, comma);
+    trim_string(ts_str);
+    int64_t t_ns = 0;
+    try {
+      t_ns = std::stoll(ts_str);
+    } catch (const std::exception &) {
+      continue;
+    }
+
+    std::istringstream stream(line.substr(comma + 1));
+    std::string field;
+    std::vector<double> values;
+    values.reserve(16);
+    while (std::getline(stream, field, ',')) {
+      if (field.empty()) {
+        continue;
+      }
+      trim_string(field);
+      values.push_back(std::atof(field.c_str()));
+    }
+    // [p(3), q(wxyz)(4), ...] — need at least 7 fields after timestamp
+    if (values.size() < 7) {
+      continue;
+    }
+
+    const int64_t sec_i64 = t_ns / 1000000000LL;
+    const uint32_t nsec_u32 = static_cast<uint32_t>(t_ns % 1000000000LL);
+
+    GtPoseMeasurement row{};
+    row.stamp = rclcpp::Time{static_cast<int32_t>(sec_i64), nsec_u32, RCL_ROS_TIME};
+    row.position = Eigen::Vector3d{values[0], values[1], values[2]};
+    row.orientation = Eigen::Quaterniond{values[3], values[4], values[5], values[6]};
+    if (row.orientation.norm() < 1e-12) {
+      throw std::runtime_error(
+        "GT CSV row has quaternion with near-zero norm (file " + csv_path + ").");
+    }
+    row.orientation.normalize();
+    out.push_back(row);
+  }
+
+  if (out.size() < 2U) {
+    throw std::runtime_error(
+      "GT CSV must contain at least two valid pose rows: " + csv_path);
+  }
+  std::sort(
+    out.begin(),
+    out.end(),
+    [](const GtPoseMeasurement & a, const GtPoseMeasurement & b) { return a.stamp < b.stamp; });
+  return out;
+}
+
+IngestionNode::GtPoseMeasurement IngestionNode::lookup_gt_pose_from_csv_strict(
+  const rclcpp::Time & stamp) const
+{
+  if (gt_csv_trajectory_.empty()) {
+    throw std::runtime_error("GT CSV trajectory is empty.");
+  }
+  const auto & traj = gt_csv_trajectory_;
+  auto later_it = std::lower_bound(
+    traj.begin(),
+    traj.end(),
+    stamp,
+    [](const GtPoseMeasurement & sample, const rclcpp::Time & target) {
+      return sample.stamp < target;
+    });
+
+  if (later_it != traj.end() && later_it->stamp == stamp) {
+    return *later_it;
+  }
+  if (later_it == traj.begin()) {
+    throw std::runtime_error(
+      "GT CSV lookup failed: stamp is before first CSV sample (strict bracketing requires a sample "
+      "before and after).");
+  }
+  if (later_it == traj.end()) {
+    throw std::runtime_error(
+      "GT CSV lookup failed: stamp is after last CSV sample (strict bracketing requires a sample "
+      "before and after).");
+  }
+
+  const auto earlier_it = std::prev(later_it);
+  const double t0 = earlier_it->stamp.seconds();
+  const double t1 = later_it->stamp.seconds();
+  const double dt = t1 - t0;
+  if (std::fabs(dt) < 1e-9) {
+    return *later_it;
+  }
+  const double alpha = (stamp.seconds() - t0) / dt;
+  GtPoseMeasurement interpolated{};
+  interpolated.stamp = stamp;
+  interpolated.position = earlier_it->position + alpha * (later_it->position - earlier_it->position);
+  interpolated.orientation = earlier_it->orientation.slerp(alpha, later_it->orientation);
+  interpolated.orientation = quaternion_cleanup(interpolated.orientation);
+  return interpolated;
+}
 
 IngestionNode::IngestionNode(const rclcpp::NodeOptions & options)
 : rclcpp::Node{"ros2qnukf_ingestion_node", options}
@@ -70,8 +194,6 @@ IngestionNode::IngestionNode(const rclcpp::NodeOptions & options)
   imu_topic_ = this->declare_parameter<std::string>("imu_topic", imu_topic_);
   left_image_topic_ = this->declare_parameter<std::string>("left_image_topic", left_image_topic_);
   right_image_topic_ = this->declare_parameter<std::string>("right_image_topic", right_image_topic_);
-  gt_pose_topic_ = this->declare_parameter<std::string>("gt_pose_topic", gt_pose_topic_);
-  gt_transform_topic_ = this->declare_parameter<std::string>("gt_transform_topic", gt_transform_topic_);
   estimate_pose_topic_ = this->declare_parameter<std::string>("estimate_pose_topic", estimate_pose_topic_);
   estimate_pose_cov_topic_ =
     this->declare_parameter<std::string>("estimate_pose_cov_topic", estimate_pose_cov_topic_);
@@ -83,9 +205,6 @@ IngestionNode::IngestionNode(const rclcpp::NodeOptions & options)
     sensor_qos_depth_);
   sensor_qos_depth_ = static_cast<int>(std::max<int64_t>(1, declared_qos_depth));
   cam_to_imu_dt_sec_ = this->declare_parameter<double>("cam_to_imu_dt_sec", cam_to_imu_dt_sec_);
-  gt_lookup_max_dt_sec_ = std::max(
-    0.0,
-    this->declare_parameter<double>("gt_lookup_max_dt_sec", gt_lookup_max_dt_sec_));
   imu_history_sec_ = std::max(
     0.2,
     this->declare_parameter<double>("imu_history_sec", imu_history_sec_));
@@ -104,7 +223,6 @@ IngestionNode::IngestionNode(const rclcpp::NodeOptions & options)
   path_publish_period_sec_ = std::max(
     0.0,
     this->declare_parameter<double>("path_publish_period_sec", path_publish_period_sec_));
-  pseudo_pose_when_no_gt_ = this->declare_parameter<bool>("pseudo_pose_when_no_gt", pseudo_pose_when_no_gt_);
   camera_qos_reliable_ = this->declare_parameter<bool>("camera_qos_reliable", camera_qos_reliable_);
   publish_gt_feature_markers_ =
     this->declare_parameter<bool>("publish_gt_feature_markers", publish_gt_feature_markers_);
@@ -138,6 +256,19 @@ IngestionNode::IngestionNode(const rclcpp::NodeOptions & options)
     0.1,
     50.0);
 
+  if (path_gt_csv_.empty()) {
+    throw std::invalid_argument(
+      "Parameter path_gt_csv must be set to a EuRoC-format GT CSV (required for pose lookup).");
+  }
+  gt_csv_trajectory_ = load_gt_csv_trajectory(path_gt_csv_);
+  RCLCPP_INFO(
+    this->get_logger(),
+    "Loaded GT CSV trajectory: path=%s samples=%zu first=%.9f last=%.9f",
+    path_gt_csv_.c_str(),
+    gt_csv_trajectory_.size(),
+    gt_csv_trajectory_.front().stamp.seconds(),
+    gt_csv_trajectory_.back().stamp.seconds());
+
   const auto sensor_qos = build_sensor_qos(sensor_qos_depth_);
   const rclcpp::QoS camera_qos =
     camera_qos_reliable_
@@ -163,18 +294,6 @@ IngestionNode::IngestionNode(const rclcpp::NodeOptions & options)
     sensor_qos,
     std::bind(&IngestionNode::imu_callback, this, std::placeholders::_1));
 
-  if (!gt_pose_topic_.empty()) {
-    gt_pose_sub_ = this->create_subscription<geometry_msgs::msg::PoseStamped>(
-      gt_pose_topic_,
-      sensor_qos,
-      std::bind(&IngestionNode::gt_pose_callback, this, std::placeholders::_1));
-  }
-  if (!gt_transform_topic_.empty()) {
-    gt_transform_sub_ = this->create_subscription<geometry_msgs::msg::TransformStamped>(
-      gt_transform_topic_,
-      sensor_qos,
-      std::bind(&IngestionNode::gt_transform_callback, this, std::placeholders::_1));
-  }
   estimate_pose_pub_ =
     this->create_publisher<geometry_msgs::msg::PoseStamped>(estimate_pose_topic_, output_qos);
   estimate_pose_cov_pub_ = this->create_publisher<geometry_msgs::msg::PoseWithCovarianceStamped>(
@@ -234,6 +353,8 @@ IngestionNode::IngestionNode(const rclcpp::NodeOptions & options)
 
 void IngestionNode::imu_callback(sensor_msgs::msg::Imu::ConstSharedPtr msg)
 {
+  static bool logged_first_imu = false;
+  static bool logged_init_success = false;
   std::scoped_lock lock{data_mutex_};
   QnukfFilter::ImuMeasurement measurement{};
   measurement.stamp = rclcpp::Time{msg->header.stamp};
@@ -246,22 +367,36 @@ void IngestionNode::imu_callback(sensor_msgs::msg::Imu::ConstSharedPtr msg)
     msg->linear_acceleration.y,
     msg->linear_acceleration.z};
   imu_history_.push_back(measurement);
+  if (!logged_first_imu) {
+    RCLCPP_INFO(
+      this->get_logger(),
+      "First IMU stamp observed at %.9f",
+      measurement.stamp.seconds());
+    logged_first_imu = true;
+  }
 
   if (!filter_.initialized()) {
-    const auto gt_pose = lookup_gt_pose_interpolated(measurement.stamp);
-    if (gt_pose.has_value()) {
+    try {
+      const auto gt_pose = lookup_gt_pose_from_csv_strict(measurement.stamp);
       filter_.initialize_from_pose(
-        gt_pose->position,
-        gt_pose->orientation,
+        gt_pose.position,
+        gt_pose.orientation,
         initial_gyro_bias_,
         initial_accel_bias_);
-    } else {
-      // IMU-first startup: if GT has not arrived yet, start from a neutral pose.
-      filter_.initialize_from_pose(
-        Eigen::Vector3d::Zero(),
-        Eigen::Quaterniond::Identity(),
-        initial_gyro_bias_,
-        initial_accel_bias_);
+      if (!logged_init_success) {
+        RCLCPP_INFO(
+          this->get_logger(),
+          "Filter initialized from CSV at imu stamp %.9f",
+          measurement.stamp.seconds());
+        logged_init_success = true;
+      }
+    } catch (const std::exception & e) {
+      RCLCPP_ERROR(
+        this->get_logger(),
+        "Initialization lookup failed at imu stamp %.9f: %s",
+        measurement.stamp.seconds(),
+        e.what());
+      throw;
     }
   } else if (imu_history_.size() >= 2U) { //this would effectivly always be 2 and not more than 2
     const auto & prev = imu_history_[imu_history_.size() - 2U];
@@ -270,49 +405,6 @@ void IngestionNode::imu_callback(sensor_msgs::msg::Imu::ConstSharedPtr msg)
     trim_imu_history(curr.stamp);
     drain_pending_stereo_frames_locked();
   } 
-}
-
-void IngestionNode::gt_pose_callback(geometry_msgs::msg::PoseStamped::ConstSharedPtr msg)
-{
-  std::scoped_lock lock{data_mutex_};
-  GtPoseMeasurement gt{};
-  gt.stamp = rclcpp::Time{msg->header.stamp};
-  gt.position = Eigen::Vector3d{
-    msg->pose.position.x,
-    msg->pose.position.y,
-    msg->pose.position.z};
-  gt.orientation = Eigen::Quaterniond{
-    msg->pose.orientation.w,
-    msg->pose.orientation.x,
-    msg->pose.orientation.y,
-    msg->pose.orientation.z};
-  gt.orientation.normalize();
-  gt_history_.push_back(gt);
-  trim_gt_history(gt.stamp - rclcpp::Duration::from_seconds(imu_history_sec_));
-  drain_pending_stereo_frames_locked();
-}
-
-void IngestionNode::gt_transform_callback(geometry_msgs::msg::TransformStamped::ConstSharedPtr msg)
-{
-  std::scoped_lock lock{data_mutex_};
-  GtPoseMeasurement gt{};
-  gt.stamp = rclcpp::Time{msg->header.stamp};
-  gt.position = Eigen::Vector3d{
-    msg->transform.translation.x,
-    msg->transform.translation.y,
-    msg->transform.translation.z};
-  gt.orientation = Eigen::Quaterniond{
-    msg->transform.rotation.w,
-    msg->transform.rotation.x,
-    msg->transform.rotation.y,
-    msg->transform.rotation.z};
-  if (gt.orientation.norm() < 1e-9) {
-    throw std::runtime_error("Received GT transform quaternion with near-zero norm.");
-  }
-  gt.orientation.normalize();
-  gt_history_.push_back(gt);
-  trim_gt_history(gt.stamp - rclcpp::Duration::from_seconds(imu_history_sec_));
-  drain_pending_stereo_frames_locked();
 }
 
 void IngestionNode::stereo_callback(
@@ -350,9 +442,21 @@ void IngestionNode::drain_pending_stereo_frames_locked()
 
 bool IngestionNode::try_process_stereo_frame(const rclcpp::Time & frame_stamp)
 {
+  static bool logged_waiting_for_init = false;
+  static rclcpp::Time last_imu_lag_log{0, 0, RCL_ROS_TIME};
+  static std::size_t published_pose_count = 0U;
+
   if (!filter_.initialized()) {
+    if (!logged_waiting_for_init) {
+      RCLCPP_INFO(
+        this->get_logger(),
+        "Stereo frame waiting for initialization. frame_stamp=%.9f",
+        frame_stamp.seconds());
+      logged_waiting_for_init = true;
+    }
     return false;
   }
+  logged_waiting_for_init = false;
 
   if (imu_history_.empty()) {
     throw std::runtime_error(
@@ -361,90 +465,54 @@ bool IngestionNode::try_process_stereo_frame(const rclcpp::Time & frame_stamp)
 
   const auto target_imu_stamp = frame_stamp + rclcpp::Duration::from_seconds(cam_to_imu_dt_sec_);
   if (imu_history_.back().stamp < target_imu_stamp) {
+    if (
+      last_imu_lag_log.nanoseconds() == 0 ||
+      std::fabs((frame_stamp - last_imu_lag_log).seconds()) > 0.2)
+    {
+      RCLCPP_WARN(
+        this->get_logger(),
+        "Stereo blocked: waiting IMU coverage. frame=%.9f target_imu=%.9f last_imu=%.9f queue=%zu",
+        frame_stamp.seconds(),
+        target_imu_stamp.seconds(),
+        imu_history_.back().stamp.seconds(),
+        pending_stereo_frame_stamps_.size());
+      last_imu_lag_log = frame_stamp;
+    }
     return false;
   }
 
-  auto gt_pose = lookup_gt_pose_interpolated(frame_stamp);
-  if (!gt_pose.has_value()) {
-    if (!pseudo_pose_when_no_gt_) {
-      return false;
-    }
-    const auto filter_state = filter_.state();
-    GtPoseMeasurement pseudo_gt{};
-    pseudo_gt.stamp = frame_stamp;
-    pseudo_gt.position = filter_state.position;
-    pseudo_gt.orientation = filter_state.orientation;
-    gt_pose = pseudo_gt;
-  RCLCPP_INFO(
-    this->get_logger(), 
-    "No GT pose found at stamp %.6f, using pseudo pose from filter state.",
-    frame_stamp.seconds());
+  GtPoseMeasurement gt_pose{};
+  try {
+    gt_pose = lookup_gt_pose_from_csv_strict(frame_stamp);
+  } catch (const std::exception & e) {
+    RCLCPP_ERROR(
+      this->get_logger(),
+      "Stereo CSV lookup failed at frame stamp %.9f: %s",
+      frame_stamp.seconds(),
+      e.what());
+    throw;
   }
 
-  const auto pseudo_measurement = build_pseudo_vision_measurement(*gt_pose);
-  publish_pseudo_measurement_markers_gt_frame(frame_stamp, pseudo_measurement, *gt_pose);
+  const auto pseudo_measurement = build_pseudo_vision_measurement(gt_pose);
+  publish_pseudo_measurement_markers_gt_frame(frame_stamp, pseudo_measurement, gt_pose);
 
   try_filter_update(pseudo_measurement);
   publish_filter_estimate(frame_stamp);
+  ++published_pose_count;
+  if (published_pose_count == 1U || (published_pose_count % 30U == 0U)) {
+    RCLCPP_INFO(
+      this->get_logger(),
+      "Published pose #%zu at %.9f (pending queue=%zu)",
+      published_pose_count,
+      frame_stamp.seconds(),
+      pending_stereo_frame_stamps_.size());
+  }
   return true;
 }
 
 rclcpp::QoS IngestionNode::build_sensor_qos(const int depth) const
 {
   return rclcpp::QoS(rclcpp::KeepLast(depth)).best_effort().durability_volatile();
-}
-
-std::optional<IngestionNode::GtPoseMeasurement> IngestionNode::lookup_gt_pose_interpolated(
-  const rclcpp::Time & stamp) const
-{
-  if (gt_history_.empty()) {
-    return std::nullopt;
-  }
-  if (gt_history_.size() == 1U) {
-    GtPoseMeasurement out = gt_history_.front();
-    out.stamp = stamp;
-    return out;
-  }
-
-  auto later_it = std::lower_bound(
-    gt_history_.begin(),
-    gt_history_.end(),
-    stamp,
-    [](const GtPoseMeasurement & sample, const rclcpp::Time & target) {
-      return sample.stamp < target;
-    });
-
-  if (later_it != gt_history_.end() && later_it->stamp == stamp) {
-    return *later_it;
-  }
-
-  auto earlier_it = gt_history_.end();
-  if (later_it == gt_history_.begin()) {
-    // Target is before history window: extrapolate from first two samples.
-    earlier_it = gt_history_.begin();
-    later_it = std::next(gt_history_.begin());
-  } else if (later_it == gt_history_.end()) {
-    // Target is after history window: extrapolate from last two samples.
-    later_it = std::prev(gt_history_.end());
-    earlier_it = std::prev(later_it);
-  } else {
-    earlier_it = std::prev(later_it);
-  }
-
-  const double t0 = earlier_it->stamp.seconds();
-  const double t1 = later_it->stamp.seconds();
-  const double dt = t1 - t0;
-  if (std::fabs(dt) < 1e-9) {
-    return *later_it;
-  }
-
-  const double alpha = (stamp.seconds() - t0) / dt;
-  GtPoseMeasurement interpolated{};
-  interpolated.stamp = stamp;
-  interpolated.position = earlier_it->position + alpha * (later_it->position - earlier_it->position);
-  interpolated.orientation = earlier_it->orientation.slerp(alpha, later_it->orientation);
-  interpolated.orientation.normalize();
-  return interpolated;
 }
 
 QnukfFilter::PseudoVisionMeasurement IngestionNode::build_pseudo_vision_measurement(
@@ -475,13 +543,6 @@ void IngestionNode::trim_imu_history(const rclcpp::Time & keep_after)
   // Keep newest IMU sample; all older samples already consumed by predict_step.
   while (!imu_history_.empty() && imu_history_.front().stamp < keep_after) {
     imu_history_.pop_front();
-  }
-}
-
-void IngestionNode::trim_gt_history(const rclcpp::Time & keep_after)
-{
-  while (!gt_history_.empty() && gt_history_.front().stamp < keep_after) {
-    gt_history_.pop_front();
   }
 }
 

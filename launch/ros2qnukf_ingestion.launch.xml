@@ -6,7 +6,7 @@
   <arg name="bag_rate" default="1.0"/>
   <arg name="bag_start" default="0.0"/>
   <arg name="rviz_enable" default="true"/>
-  <arg name="rviz_config" default="/home/kash/workspace/catkin_ws_ov_copy/src/ros2qnukf/config/ros2qnukf_display.rviz"/>
+  <arg name="rviz_config" default="/home/kash/workspace/catkin_ws_ov_copy/src/ros2qnukf/config/ros2qnukf_display_2.rviz"/>
   <arg name="params_file" default="$(find-pkg-share ros2qnukf)/config/ros2qnukf_ingestion.params.yaml"/>
 
   <arg name="use_sim_time" default="true"/>
@@ -40,9 +40,7 @@
   <arg name="stereo_sync_queue_size" default="15"/>
   <arg name="stereo_queue_max" default="512"/>
   <arg name="imu_history_sec" default="2.0"/>
-  <arg name="gt_lookup_max_dt_sec" default="0.25"/>
   <arg name="pseudo_feature_count" default="50"/>
-  <arg name="pseudo_noise_stddev" default="0.1"/>
   <arg name="publish_gt_feature_markers" default="true"/>
   <arg name="gt_feature_markers_topic" default="/ros2qnukf/gt_feature_points"/>
   <arg name="gt_feature_marker_diameter" default="0.12"/>
@@ -51,7 +49,6 @@
   <arg name="pseudo_measurement_markers_topic" default="/ros2qnukf/pseudo_measurements_gt"/>
   <arg name="pseudo_measurement_marker_diameter" default="0.08"/>
   <arg name="use_stereo" default="true"/>
-  <arg name="pseudo_pose_when_no_gt" default="false"/>
   <arg name="camera_qos_reliable" default="false"/>
 
   <node pkg="ros2qnukf" exec="ros2qnukf_ingestion_node" name="ros2qnukf_ingestion" output="screen">
@@ -60,8 +57,6 @@
     <param name="imu_topic" value="$(var imu_topic)"/>
     <param name="left_image_topic" value="$(var left_image_topic)"/>
     <param name="right_image_topic" value="$(var right_image_topic)"/>
-    <param name="gt_pose_topic" value="$(var gt_pose_topic)"/>
-    <param name="gt_transform_topic" value="$(var gt_transform_topic)"/>
     <param name="estimate_pose_topic" value="$(var estimate_pose_topic)"/>
     <param name="estimate_pose_cov_topic" value="$(var estimate_pose_cov_topic)"/>
     <param name="estimate_path_topic" value="$(var estimate_path_topic)"/>
@@ -72,9 +67,7 @@
     <param name="stereo_sync_queue_size" value="$(var stereo_sync_queue_size)"/>
     <param name="stereo_queue_max" value="$(var stereo_queue_max)"/>
     <param name="imu_history_sec" value="$(var imu_history_sec)"/>
-    <param name="gt_lookup_max_dt_sec" value="$(var gt_lookup_max_dt_sec)"/>
     <param name="pseudo_feature_count" value="$(var pseudo_feature_count)"/>
-    <param name="pseudo_noise_stddev" value="$(var pseudo_noise_stddev)"/>
     <param name="publish_gt_feature_markers" value="$(var publish_gt_feature_markers)"/>
     <param name="gt_feature_markers_topic" value="$(var gt_feature_markers_topic)"/>
     <param name="gt_feature_marker_diameter" value="$(var gt_feature_marker_diameter)"/>
@@ -83,7 +76,6 @@
     <param name="pseudo_measurement_markers_topic" value="$(var pseudo_measurement_markers_topic)"/>
     <param name="pseudo_measurement_marker_diameter" value="$(var pseudo_measurement_marker_diameter)"/>
     <param name="use_stereo" value="$(var use_stereo)"/>
-    <param name="pseudo_pose_when_no_gt" value="$(var pseudo_pose_when_no_gt)"/>
     <param name="camera_qos_reliable" value="$(var camera_qos_reliable)"/>
     <param name="init_bias_from_gt_csv" value="$(var init_bias_from_gt_csv)"/>
     <param name="path_gt_csv" value="$(var path_gt_csv)"/>

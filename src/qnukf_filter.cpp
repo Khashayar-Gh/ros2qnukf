@@ -1,4 +1,5 @@
 #include "ros2qnukf/qnukf_filter.hpp"
+#include "ros2qnukf/quaternion_utils.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -18,8 +19,6 @@ namespace
 {
 
 const auto kFilterLogger = rclcpp::get_logger("ros2qnukf.qnukf_filter");
-
-Eigen::Quaterniond quaternion_cleanup(Eigen::Quaterniond q);
 
 Eigen::MatrixXd matrix_pseudo_inverse(const Eigen::MatrixXd & matrix)
 {
@@ -54,16 +53,6 @@ Eigen::MatrixXd matrix_pseudo_inverse(const Eigen::MatrixXd & matrix)
   }
 
   return svd.matrixV() * inv_singular.asDiagonal() * svd.matrixU().transpose();
-}
-
-// Mirrors pytorch3d.transforms.standardize_quaternion: unit quaternions with w >= 0.
-Eigen::Quaterniond standardize_quaternion(Eigen::Quaterniond q)
-{
-  q.normalize();
-  if (q.w() < 0.0) {
-    q.coeffs() *= -1.0;
-  }
-  return q;
 }
 
 // DeepUKF-VIN/utils.py normalize_tensor_to_pi
@@ -126,16 +115,6 @@ Eigen::Vector3d q_m_q(const Eigen::Quaterniond & q1, const Eigen::Quaterniond & 
 {
   const Eigen::Quaterniond q_delta = q_p_q(q1, q2.conjugate());
   return normalize_tensor_to_pi(quaternion_to_rotation_vector(q_delta));
-}
-
-// Mirrors DeepUKF-VIN/six_dof_VIN.py six_dof_kin lines 43-48 after matrix_exp on q.
-Eigen::Quaterniond quaternion_cleanup(Eigen::Quaterniond q)
-{
-  q = standardize_quaternion(q);
-  const Eigen::Matrix3d rotation = q.toRotationMatrix();
-  q = Eigen::Quaterniond{rotation};
-  q = standardize_quaternion(q);
-  return q;
 }
 
 }  // namespace

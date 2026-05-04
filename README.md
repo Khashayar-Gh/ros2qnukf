@@ -6,7 +6,7 @@ Reference trees elsewhere in the workspace (`DeepUKF-VIN/`, `open_vins/`, etc.) 
 
 ### Documentation note
 
-Treat this file as the **working overview** of pipeline layout and parameters—keep it updated when behavior changes. Content here may still be wrong or stale in detail; **confirm anything safety- or correctness-critical against the source** (`ros2qnukf/src/`, `ros2qnukf/include/ros2qnukf/`).
+Treat this file as the **working overview** of pipeline layout and parameters—**update it whenever ingestion, GT handling, launch defaults, or filter parameters change.** Content here may still be wrong or stale in detail; **confirm anything safety- or correctness-critical against the source** (`ros2qnukf/src/`, `ros2qnukf/include/ros2qnukf/`).
 
 ---
 
@@ -20,26 +20,24 @@ flowchart LR
     IMU[/imu topic/]
     L[/left image/]
     R[/right image/]
-    GTp[/gt pose topic/]
-    GTt[/gt transform topic/]
+    CSV["EuRoC GT CSV<br/>path_gt_csv"]
   end
   subgraph ingestion["ros2qnukf_ingestion_node"]
     SYNC["message_filters ApproximateTime stereo sync"]
     Q["FIFO: pending frame timestamps"]
     PRED["IMU: predict_step per consecutive pair"]
     DRAIN["Drain queue when constraints satisfied"]
-    GTi["GT interpolation at frame time"]
+    GTi["GT from CSV: strict bracket + interpolate"]
     UPD["UKF update: pseudo vision"]
     OUT["Pose + Path publishers"]
   end
+  CSV --> GTi
   IMU --> PRED
   L --> SYNC
   R --> SYNC
   SYNC --> Q
   PRED --> DRAIN
   Q --> DRAIN
-  GTp --> GTi
-  GTt --> GTi
   DRAIN --> GTi
   GTi --> UPD
   UPD --> OUT
@@ -49,16 +47,12 @@ flowchart LR
 
 Stereo pairs **do not** run the UKF update in the image callback alone. Each sync event pushes **`frame_stamp = max(left_stamp, right_stamp)`** onto **`pending_stereo_frame_stamps_`** (bounded by **`stereo_queue_max`**; oldest dropped if full).
 
-**`drain_pending_stereo_frames_locked()`** runs **after**:
-
-- each IMU message (predict + history trim),
-- each GT pose / transform message (history trim),
-
-and repeatedly tries the **front** of the queue with **`try_process_stereo_frame`**. A frame is **skipped until later** (queue head stays blocking) when:
+**`drain_pending_stereo_frames_locked()`** runs **after** each IMU message (predict + IMU history trim) and repeatedly tries the **front** of the queue with **`try_process_stereo_frame`**. A frame is **skipped until later** (queue head stays blocking) when:
 
 - the filter is not initialized yet,
-- **`imu_history_.back().stamp < frame_stamp + cam_to_imu_dt_sec`** (IMU stream has not reached the camera-aligned IMU time—no timestamp slack),
-- interpolated GT at **`frame_stamp`** is unavailable (**needs at least one** GT pose in history; **two** samples preferred for interpolation between times).
+- **`imu_history_.back().stamp < frame_stamp + cam_to_imu_dt_sec`** (IMU stream has not reached the camera-aligned IMU time—no timestamp slack).
+
+Once the filter is initialized and the IMU time check passes, **pose for pseudo vision** is read from the **preloaded GT CSV** (see below). If lookup fails (for example **stamp before the first or after the last** CSV row, or the file had **fewer than two** valid rows at load), the node throws **`std::runtime_error`** (no neutral-pose init, no filter-state “pseudo GT”).
 
 This avoids loosening time alignment while handling IMU/image callback ordering under load.
 
@@ -67,15 +61,21 @@ This avoids loosening time alignment while handling IMU/image callback ordering 
 | Phase | When | What |
 |--------|------|------|
 | **Predict** | Every new IMU sample **after** initialization, when **`imu_history_.size() ≥ 2`** | **`QnukfFilter::predict_step(prev, curr)`** integrates state between consecutive IMU stamps. |
-| **Update** | Only when a queued stereo frame is **drained** successfully | Build **pseudo vision** from interpolated GT → **`update_pseudo_vision`**. |
+| **Update** | Only when a queued stereo frame is **drained** successfully | Build **pseudo vision** from **CSV-interpolated** GT at **`frame_stamp`** → **`update_pseudo_vision`**. |
 
 **`predict_batch`** remains on **`QnukfFilter`** for reuse/tests; live ingestion uses **per-IMU `predict_step`** only.
 
 ### Ground truth for initialization and pseudo measurements
 
-- **`gt_pose_topic`** and **`gt_transform_topic`** append into one chronologically trimmed **`gt_history_`** (same frame as **`gt_lookup_max_dt_sec`** / history window naming).
-- **`lookup_gt_pose_interpolated(stamp)`** requires **at least two** GT samples: **linear interpolation** for position, **spherical linear interpolation (slerp)** for orientation between neighbors. Extrapolation uses the same two-sample segment when **`stamp`** is slightly outside the bracket (implementation-defined endpoints).
-- **Initialization:** On the **first** IMU sample, if interpolated GT exists at that IMU time, **`initialize_from_pose`** uses it; otherwise the filter starts at **origin + identity orientation** (warning throttle) until GT-backed behavior is possible.
+Ingestion **does not** subscribe to GT topics. It loads **`path_gt_csv`** once at startup (EuRoC-style CSV: `#timestamp` nanoseconds, then **`p_x,p_y,p_z,q_w,q_x,q_y,q_z`**, …). The first column is parsed as **`int64_t` nanoseconds** so wall-clock stamps are not rounded in **`double`**.
+
+- **Minimum file requirement:** at least **two** valid pose rows; otherwise the node throws at startup.
+- **`lookup_gt_pose_from_csv_strict(stamp)`**
+  - If **`stamp`** equals a row time → use that pose.
+  - Else → requires one CSV sample **strictly before** and one **strictly after** **`stamp`**: **linear** position + **slerp** orientation. **No extrapolation:** if **`stamp`** is before the first row or after the last row, throw **`std::runtime_error`**.
+- **Initialization:** On the **first** IMU sample, **`initialize_from_pose`** uses **`lookup_gt_pose_from_csv_strict`** at that IMU time. Failure throws (there is no fallback to identity pose).
+
+Optional **`ros2qnukf_gt_csv_publisher`** in the launch file republishes the same CSV as **`PoseStamped` / `Path`** for RViz and for **`initial_pose_realign_node`**—that is separate from ingestion’s internal GT lookup.
 
 ### `QnukfFilter` (core UKF)
 
@@ -88,7 +88,7 @@ This avoids loosening time alignment while handling IMU/image callback ordering 
 
 ### Threading
 
-**`ingestion_main.cpp`** uses **`MultiThreadedExecutor`** with **4** callback threads so IMU, stereo sync, and GT subscriptions overlap. All filter state, IMU/GT histories, pending stereo queue, and path message are guarded by **one mutex** **`data_mutex_`** (no separate filter lock).
+**`ingestion_main.cpp`** uses **`MultiThreadedExecutor`** with **4** callback threads so IMU and stereo sync callbacks can overlap. All filter state, IMU history, pending stereo queue, and path message are guarded by **one mutex** **`data_mutex_`** (no separate filter lock).
 
 ### Outputs
 
@@ -187,9 +187,9 @@ ros2 topic echo /ros2qnukf/pose_estimate --once
 | Parameter | Default | Role |
 |-----------|---------|------|
 | `imu_topic`, `left_image_topic`, `right_image_topic` | EuRoC-style (`/imu0`, `/cam0/image_raw`, `/cam1/image_raw`) | Inputs. |
-| `gt_pose_topic`, `gt_transform_topic` | See launch | GT merged into one history for interpolation + pseudo measurement. |
-| `gt_from_csv_enable`, `path_gt_csv`, `gt_path_topic`, `gt_csv_publish_rate_hz` | `true`, OpenVINS EuRoC CSV default, `/ov_msckf/pathgt`, `60.0` | Optional GT source when bag has no GT topic. |
-| `init_bias_from_gt_csv` | `true` | Mirrors DeepUKF-VIN init style by setting initial IMU biases from GT CSV means when CSV is available. |
+| `path_gt_csv` | *(non-empty)* | **Required.** EuRoC/OpenVINS GT CSV for pose at init + every stereo update (loaded once at startup). Launch defaults to an OpenVINS EuRoC CSV path; empty string → **`invalid_argument`**. |
+| `gt_from_csv_enable`, `gt_path_topic`, `gt_csv_publish_rate_hz` | launch defaults | Used only by **`ros2qnukf_gt_csv_publisher`** (optional RViz path / pose topics), not by ingestion’s internal lookup. |
+| `init_bias_from_gt_csv` | `true` | If **`path_gt_csv`** is readable, set initial **`b_w` / `b_a`** from column means (`b_w_*`, `b_a_*`); if parsing fails, biases stay zero (**warn** only). |
 | `gyro_noise_stddev`, `accel_noise_stddev`, `gyro_bias_rw_stddev`, `accel_bias_rw_stddev` | `2.399e-3`, `2.828e-2`, `1.371e-6`, `2.121e-4` | QNUKF process-noise terms (from YAML by default). |
 | `initial_covariance_diagonal` | 15x `0.1` | Initial 15D state covariance diagonal used on filter initialization. |
 | `estimate_pose_topic`, `estimate_pose_cov_topic`, `estimate_path_topic` | `/ros2qnukf/pose_estimate`, `/ros2qnukf/pose_estimate_cov`, `/ros2qnukf/path_estimate` | Outputs. |
@@ -198,28 +198,24 @@ ros2 topic echo /ros2qnukf/pose_estimate --once
 | `stereo_sync_queue_size` | `15` | Approximate-time sync queue for left/right images. |
 | `sensor_qos_depth` | `10` | Subscriber history depth for sensor QoS. |
 | `path_publish_period_sec` | `0` | Path publish throttle (pose still every successful update). |
-| `pseudo_feature_count`, `pseudo_noise_stddev` | `20`, `0.02` | Pseudo measurement count / noise scale. |
+| `pseudo_feature_count`, `pseudo_noise_stddev` | `50`, `0.01` | Pseudo measurement count / noise scale (see `ros2qnukf_ingestion.params.yaml` for process-noise overrides). |
 | `publish_gt_feature_markers`, `gt_feature_markers_topic`, `gt_feature_marker_diameter`, `gt_feature_markers_publish_hz` | `true`, `/ros2qnukf/gt_feature_points`, `0.12`, `5.0` | Fixed landmarks published on a **ROS timer** (default 5 Hz), independent of stereo / filter; uses node clock (`use_sim_time` OK). Disable with `publish_gt_feature_markers:=false`. |
-| `publish_pseudo_measurement_markers`, `pseudo_measurement_markers_topic`, `pseudo_measurement_marker_diameter` | `true`, `/ros2qnukf/pseudo_measurements_gt`, `0.08` | Per-stereo pseudo measurements (`body_points`) transformed to `world` using interpolated GT pose for RViz inspection of update inputs in GT frame. |
-| `imu_history_sec` | `2.0` | GT history trim horizon (`gt_history_` retention window). IMU history trim is consumption-based (drop all samples older than newest predicted sample). |
-| `gt_lookup_max_dt_sec` | `0.25` | GT history trim horizon. |
-| `pseudo_pose_when_no_gt` | `false` | If **true**, when no GT pose is available at frame time the node uses **current filter state** as the synthetic “GT” for pseudo vision (IMU/smoke-test only; not for benchmark accuracy). |
+| `publish_pseudo_measurement_markers`, `pseudo_measurement_markers_topic`, `pseudo_measurement_marker_diameter` | `true`, `/ros2qnukf/pseudo_measurements_gt`, `0.08` | Per-stereo pseudo measurements (`body_points`) transformed to `world` using CSV-interpolated GT pose for RViz. |
+| `imu_history_sec` | `2.0` | Declared for compatibility; **not used** by current ingestion logic (IMU history is trimmed by consumption after **`predict_step`**). |
 | `camera_qos_reliable` | `false` | If **true**, stereo image subscriptions use **reliable** QoS instead of sensor-style best-effort — try if synchronized stereo never arrives from your bag. |
 | `use_stereo` | `true` | If false, stereo sync is not used (see code paths). |
 | `debug` | `false` | Reserved diagnostics flag (currently minimal effect). |
 
 ### No `/ros2qnukf/pose_estimate` output?
 
-The update step requires **pseudo vision**, which uses **ground truth pose** sampled from **`gt_pose_topic`** and **`gt_transform_topic`**. Defaults (`/ov_msckf/posegt`, `/vicon/...`) match **OpenVINS-style** overlays and **some** EuRoC Machine Hall bags — they are **often wrong** for a bare EuRoC ROS 2 bag.
+The update step requires **pseudo vision**, which uses **CSV-interpolated pose** at each **`frame_stamp`**. Typical causes of silence or process exit:
 
-1. Inspect the bag: `ros2 bag info /path/to/bag` — find `geometry_msgs/msg/PoseStamped` or `TransformStamped` topics for truth.
-2. Relaunch with remaps, e.g.  
-   `gt_pose_topic:=/your/truth/pose gt_transform_topic:=`  
-   (`gt_transform_topic` empty disables that subscription.)
-3. With **`debug:=true`**, watch the console for throttled **`ros2qnukf:`** messages (**not initialized**, **IMU behind camera frame**, **no ground truth**, etc.).
-4. Quick pipeline check without GT remap: **`pseudo_pose_when_no_gt:=true`** (expect warnings; poses track propagation + noisy self-consistency only).
+1. **`path_gt_csv` missing or wrong** — ingestion refuses an empty path and throws if the file cannot be read or has fewer than two pose rows.
+2. **Time span mismatch** — bag timestamps must fall **inside** the CSV time span so each lookup has neighbors **before and after** (first/last image times must not lie outside the GT CSV range).
+3. **IMU behind camera** — `imu_history_.back()` must reach **`frame_stamp + cam_to_imu_dt_sec`**; otherwise frames stay queued until IMU catches up.
+4. With **`debug:=true`**, filter core verbosity is enabled via **`QnukfFilter::set_debug`**.
 
-Interpolation uses **two neighboring GT samples** when available; with **one** GT message the node uses that pose for all frames until more data arrives.
+Any **`lookup_gt_pose_from_csv_strict`** failure throws **`std::runtime_error`** (no silent fallback).
 
 ---
 
@@ -230,7 +226,7 @@ Interpolation uses **two neighboring GT samples** when available; with **one** G
 | `estimate_pose_topic` | `geometry_msgs/msg/PoseStamped` | Filter pose. |
 | `estimate_path_topic` | `nav_msgs/msg/Path` | Trajectory; may be throttled. |
 | `gt_feature_markers_topic` (see params) | `visualization_msgs/msg/MarkerArray` | **Noise-free** synthetic `pseudo_world_points_` in **`world`** (SPHERE_LIST); republished on **`gt_feature_markers_publish_hz`** timer, not on filter updates. |
-| `pseudo_measurement_markers_topic` (see params) | `visualization_msgs/msg/MarkerArray` | Pseudo measurement points projected into `world` from `body_points` with interpolated GT pose each successful stereo update. |
+| `pseudo_measurement_markers_topic` (see params) | `visualization_msgs/msg/MarkerArray` | Pseudo measurement points projected into `world` from `body_points` with CSV-interpolated GT pose each successful stereo update. |
 | `gt_aligned_pose_topic` | `geometry_msgs/msg/PoseStamped` | Published by optional initial realign node when enabled. |
 | `gt_aligned_path_topic` | `nav_msgs/msg/Path` | Aligned GT trajectory in estimate frame. |
 
