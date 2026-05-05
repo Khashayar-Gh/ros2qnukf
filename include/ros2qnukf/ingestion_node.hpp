@@ -20,6 +20,7 @@
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/image.hpp>
 #include <sensor_msgs/msg/imu.hpp>
+#include <tf2_ros/transform_broadcaster.h>
 #include <visualization_msgs/msg/marker_array.hpp>
 
 #include "ros2qnukf/qnukf_filter.hpp"
@@ -97,6 +98,10 @@ private:
   std::string pseudo_measurement_markers_topic_{"/ros2qnukf/pseudo_measurements_gt"};
   bool init_bias_from_gt_csv_{true};
   std::string path_gt_csv_{};
+  double gt_csv_edge_tolerance_sec_{0.005};
+  bool publish_estimate_tf_{true};
+  std::string estimate_tf_frame_{"qnukf_estimate"};
+  std::string world_frame_{"world"};
   double gyro_noise_stddev_{2.399e-3};
   double accel_noise_stddev_{2.828e-2};
   double gyro_bias_rw_stddev_{1.371e-6};
@@ -125,6 +130,7 @@ private:
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr estimate_path_pub_{};
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr gt_feature_markers_pub_{};
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr pseudo_measurement_markers_pub_{};
+  std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_{};
   rclcpp::TimerBase::SharedPtr gt_feature_markers_timer_{};
   nav_msgs::msg::Path estimate_path_msg_{};
   std::shared_ptr<message_filters::Subscriber<sensor_msgs::msg::Image>> left_image_sub_{};

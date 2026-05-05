@@ -72,7 +72,8 @@ Ingestion **does not** subscribe to GT topics. It loads **`path_gt_csv`** once a
 - **Minimum file requirement:** at least **two** valid pose rows; otherwise the node throws at startup.
 - **`lookup_gt_pose_from_csv_strict(stamp)`**
   - If **`stamp`** equals a row time → use that pose.
-  - Else → requires one CSV sample **strictly before** and one **strictly after** **`stamp`**: **linear** position + **slerp** orientation. **No extrapolation:** if **`stamp`** is before the first row or after the last row, throw **`std::runtime_error`**.
+  - Else → requires one CSV sample **strictly before** and one **strictly after** **`stamp`**: **linear** position + **slerp** orientation.
+  - **Edge tolerance:** if **`stamp`** is outside the CSV bounds by no more than **`gt_csv_edge_tolerance_sec`** (default `0.005`), the call **clamps to the first or last CSV row** instead of throwing. Throws if the gap exceeds the tolerance. This absorbs microsecond-scale skew between bag start/end and EuRoC GT CSV bounds without loosening interpolation everywhere else.
 - **Initialization:** On the **first** IMU sample, **`initialize_from_pose`** uses **`lookup_gt_pose_from_csv_strict`** at that IMU time. Failure throws (there is no fallback to identity pose).
 
 Optional **`ros2qnukf_gt_csv_publisher`** in the launch file republishes the same CSV as **`PoseStamped` / `Path`** for RViz and for **`initial_pose_realign_node`**—that is separate from ingestion’s internal GT lookup.
@@ -81,10 +82,11 @@ Optional **`ros2qnukf_gt_csv_publisher`** in the launch file republishes the sam
 
 - **Nominal state (16-D vector internally):** orientation quaternion, position, velocity, gyro bias, accel bias.
 - **Error state:** **15** dimensions (standard IMU navigation error parametrization).
-- **Initial covariance `P0` (on `initialize_from_pose`):** block-diagonal `diag(900·I₃, 60·I₃, 10·I₃, 0, 0)` on attitude, position, velocity, gyro bias, accel bias—same as `DeepUKF-VIN/QUKF_main3.py` `P0` (zero blocks for both bias subspaces).
+- **Initial covariance `P0` (on `initialize_from_pose`):** **uniform diagonal**, value taken from the `initial_covariance_diagonal` parameter (15 entries; YAML default `1.0e1` everywhere). The reference Python `DeepUKF-VIN/QUKF_main3.py` uses block-diagonal `diag(900·I₃, 60·I₃, 10·I₃, 0, 0)`; we deliberately stay uniform here and tune the scalar — increase if startup feels over-confident, decrease if it overshoots.
 - **Prediction:** Unscented transform on IMU kinematics; **augmented state** (**21**-D error) carries gyro/accel noise terms for stochastic propagation (`kAugmentedDim` / `kAugmentedErrorDim` in code). Quaternion mean uses weighted averaging after sigma propagation.
-- **Pseudo vision update:** Full UKF measurement update mirrored from DeepUKF-VIN: transform each predicted sigma state through pseudo-vision measurement model, compute **`zhat`**, **`Pz`**, **`Pxz`**, then apply **`K = Pxz * pinv(Pz)`** with covariance update **`P = P - K * Pz * K^T`**. **`pseudo_feature_count`** controls how many points participate.
-- **Noise / UKF tuning** (defaults in `qnukf_filter.hpp`): gyro/accel measurement noise, bias random walk, gravity magnitude, **`ukf_alpha` / `ukf_beta` / `ukf_kappa`**. Matrix invariants in the UKF core now fail fast via exceptions instead of falling back to permissive numerics.
+- **Pseudo vision update:** Full UKF measurement update mirrored from DeepUKF-VIN: transform each predicted sigma state through pseudo-vision measurement model, compute **`zhat`**, **`Pz`**, **`Pxz`**, then apply **`K = Pxz * pinv(Pz)`** with covariance update **`P = P - K * Pz * K^T`** followed by an explicit **PSD projection** (eigendecomposition; negative eigenvalues clamped to `1e-10`) to keep `P` positive semi-definite across long runs. **`Pz`** is symmetrized before the pseudo-inverse to absorb FP rounding from the outer-product accumulation. **`pseudo_feature_count`** controls how many points participate.
+- **Numerical safety:** `matrix_pseudo_inverse` is a Moore–Penrose pinv that **clips singular values below tolerance to zero** (matching `torch.pinverse`) instead of throwing — a near-singular `Pz` warns once and continues. The same PSD projection is applied at the end of `predict_one_step_unscented`. `apply_error_state` defensively renormalizes the orientation quaternion if a pathological update produces `|q| ≠ 1`.
+- **Noise / UKF tuning** (defaults in `qnukf_filter.hpp`): gyro/accel measurement noise, bias random walk, gravity magnitude, **`ukf_alpha` / `ukf_beta` / `ukf_kappa`**.
 
 ### Threading
 
@@ -147,6 +149,7 @@ Common launch arguments:
 | `debug` | Reserved diagnostics flag. Kept for interface parity, but verbose debug logging is removed. |
 | `gt_from_csv_enable` | Launch built-in GT CSV publisher (`/ov_msckf/posegt`, `/ov_msckf/pathgt`). |
 | `path_gt_csv` | GT CSV path (default OpenVINS EuRoC CSV using `dataset`). |
+| `gt_csv_edge_tolerance_sec` | Tolerance (s) for clamping out-of-bounds stamps to the first/last CSV row instead of throwing. Default `0.005`. |
 | `gt_csv_publish_rate_hz` | GT CSV publish rate in Hz. |
 | `init_bias_from_gt_csv` | If true, initialize filter `b_w`/`b_a` from GT CSV dataset means (`b_w_*`, `b_a_*`). |
 | `path_publish_period_sec` | Path throttle; **`0`** = every pose update. |
@@ -188,17 +191,18 @@ ros2 topic echo /ros2qnukf/pose_estimate --once
 |-----------|---------|------|
 | `imu_topic`, `left_image_topic`, `right_image_topic` | EuRoC-style (`/imu0`, `/cam0/image_raw`, `/cam1/image_raw`) | Inputs. |
 | `path_gt_csv` | *(non-empty)* | **Required.** EuRoC/OpenVINS GT CSV for pose at init + every stereo update (loaded once at startup). Launch defaults to an OpenVINS EuRoC CSV path; empty string → **`invalid_argument`**. |
+| `gt_csv_edge_tolerance_sec` | `0.005` | When a stamp is outside the CSV time span by ≤ this many seconds, clamp to the nearest endpoint instead of throwing. Throws beyond this gap. |
 | `gt_from_csv_enable`, `gt_path_topic`, `gt_csv_publish_rate_hz` | launch defaults | Used only by **`ros2qnukf_gt_csv_publisher`** (optional RViz path / pose topics), not by ingestion’s internal lookup. |
 | `init_bias_from_gt_csv` | `true` | If **`path_gt_csv`** is readable, set initial **`b_w` / `b_a`** from column means (`b_w_*`, `b_a_*`); if parsing fails, biases stay zero (**warn** only). |
 | `gyro_noise_stddev`, `accel_noise_stddev`, `gyro_bias_rw_stddev`, `accel_bias_rw_stddev` | `2.399e-3`, `2.828e-2`, `1.371e-6`, `2.121e-4` | QNUKF process-noise terms (from YAML by default). |
-| `initial_covariance_diagonal` | 15x `0.1` | Initial 15D state covariance diagonal used on filter initialization. |
+| `initial_covariance_diagonal` | 15x `10.0` (YAML) | Initial 15D state covariance diagonal used on filter initialization. Uniform scalar; tune in YAML rather than introducing block structure. |
 | `estimate_pose_topic`, `estimate_pose_cov_topic`, `estimate_path_topic` | `/ros2qnukf/pose_estimate`, `/ros2qnukf/pose_estimate_cov`, `/ros2qnukf/path_estimate` | Outputs. |
 | `cam_to_imu_dt_sec` | `0` | **`t_imu_target = frame_stamp + dt`** for the IMU coverage check. |
 | `stereo_queue_max` | `512` | Max queued frame timestamps. |
 | `stereo_sync_queue_size` | `15` | Approximate-time sync queue for left/right images. |
 | `sensor_qos_depth` | `10` | Subscriber history depth for sensor QoS. |
 | `path_publish_period_sec` | `0` | Path publish throttle (pose still every successful update). |
-| `pseudo_feature_count`, `pseudo_noise_stddev` | `50`, `0.01` | Pseudo measurement count / noise scale (see `ros2qnukf_ingestion.params.yaml` for process-noise overrides). |
+| `pseudo_feature_count`, `pseudo_noise_stddev` | `50`, `0.3` (YAML) | Pseudo measurement count / noise scale (see `ros2qnukf_ingestion.params.yaml` for process-noise overrides). Default matches the Python reference `pts_std`. |
 | `publish_gt_feature_markers`, `gt_feature_markers_topic`, `gt_feature_marker_diameter`, `gt_feature_markers_publish_hz` | `true`, `/ros2qnukf/gt_feature_points`, `0.12`, `5.0` | Fixed landmarks published on a **ROS timer** (default 5 Hz), independent of stereo / filter; uses node clock (`use_sim_time` OK). Disable with `publish_gt_feature_markers:=false`. |
 | `publish_pseudo_measurement_markers`, `pseudo_measurement_markers_topic`, `pseudo_measurement_marker_diameter` | `true`, `/ros2qnukf/pseudo_measurements_gt`, `0.08` | Per-stereo pseudo measurements (`body_points`) transformed to `world` using CSV-interpolated GT pose for RViz. |
 | `imu_history_sec` | `2.0` | Declared for compatibility; **not used** by current ingestion logic (IMU history is trimmed by consumption after **`predict_step`**). |

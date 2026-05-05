@@ -85,6 +85,7 @@ private:
   static Eigen::Matrix3d skew(const Eigen::Vector3d & vector);
   static Eigen::Quaterniond rot2q(const Eigen::Vector3d & rotation_vector);
   static Eigen::Matrix<double, 15, 15> symmetrize(const Eigen::Matrix<double, 15, 15> & matrix);
+  static Eigen::Matrix<double, 15, 15> project_to_psd(const Eigen::Matrix<double, 15, 15> & matrix);
   Eigen::MatrixXd matrix_sqrt_psd(const Eigen::MatrixXd & matrix) const;
   static Eigen::VectorXd apply_delta_to_augmented(
     const Eigen::VectorXd & augmented_state,

@@ -13,6 +13,7 @@
 #include <stdexcept>
 
 #include <geometry_msgs/msg/point.hpp>
+#include <geometry_msgs/msg/transform_stamped.hpp>
 #include <std_msgs/msg/color_rgba.hpp>
 #include <visualization_msgs/msg/marker.hpp>
 
@@ -160,14 +161,28 @@ IngestionNode::GtPoseMeasurement IngestionNode::lookup_gt_pose_from_csv_strict(
     return *later_it;
   }
   if (later_it == traj.begin()) {
+    const auto gap = (traj.front().stamp - stamp).seconds();
+    if (gap <= gt_csv_edge_tolerance_sec_) {
+      auto clamped = traj.front();
+      clamped.stamp = stamp;
+      return clamped;
+    }
     throw std::runtime_error(
-      "GT CSV lookup failed: stamp is before first CSV sample (strict bracketing requires a sample "
-      "before and after).");
+      "GT CSV lookup failed: stamp " + std::to_string(stamp.seconds()) +
+      " is before first CSV sample by " + std::to_string(gap) +
+      " s (tolerance=" + std::to_string(gt_csv_edge_tolerance_sec_) + " s).");
   }
   if (later_it == traj.end()) {
+    const auto gap = (stamp - traj.back().stamp).seconds();
+    if (gap <= gt_csv_edge_tolerance_sec_) {
+      auto clamped = traj.back();
+      clamped.stamp = stamp;
+      return clamped;
+    }
     throw std::runtime_error(
-      "GT CSV lookup failed: stamp is after last CSV sample (strict bracketing requires a sample "
-      "before and after).");
+      "GT CSV lookup failed: stamp " + std::to_string(stamp.seconds()) +
+      " is after last CSV sample by " + std::to_string(gap) +
+      " s (tolerance=" + std::to_string(gt_csv_edge_tolerance_sec_) + " s).");
   }
 
   const auto earlier_it = std::prev(later_it);
@@ -234,6 +249,14 @@ IngestionNode::IngestionNode(const rclcpp::NodeOptions & options)
     "pseudo_measurement_markers_topic", pseudo_measurement_markers_topic_);
   init_bias_from_gt_csv_ = this->declare_parameter<bool>("init_bias_from_gt_csv", init_bias_from_gt_csv_);
   path_gt_csv_ = this->declare_parameter<std::string>("path_gt_csv", path_gt_csv_);
+  gt_csv_edge_tolerance_sec_ = std::max(
+    0.0,
+    this->declare_parameter<double>("gt_csv_edge_tolerance_sec", gt_csv_edge_tolerance_sec_));
+  publish_estimate_tf_ =
+    this->declare_parameter<bool>("publish_estimate_tf", publish_estimate_tf_);
+  estimate_tf_frame_ =
+    this->declare_parameter<std::string>("estimate_tf_frame", estimate_tf_frame_);
+  world_frame_ = this->declare_parameter<std::string>("world_frame", world_frame_);
   gyro_noise_stddev_ = this->declare_parameter<double>("gyro_noise_stddev", gyro_noise_stddev_);
   accel_noise_stddev_ = this->declare_parameter<double>("accel_noise_stddev", accel_noise_stddev_);
   gyro_bias_rw_stddev_ = this->declare_parameter<double>("gyro_bias_rw_stddev", gyro_bias_rw_stddev_);
@@ -300,7 +323,10 @@ IngestionNode::IngestionNode(const rclcpp::NodeOptions & options)
     estimate_pose_cov_topic_, output_qos);
   estimate_path_pub_ =
     this->create_publisher<nav_msgs::msg::Path>(estimate_path_topic_, output_qos);
-  estimate_path_msg_.header.frame_id = "world";
+  estimate_path_msg_.header.frame_id = world_frame_;
+  if (publish_estimate_tf_) {
+    tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
+  }
   if (publish_gt_feature_markers_) {
     gt_feature_markers_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>(
       gt_feature_markers_topic_, output_qos);
@@ -349,6 +375,26 @@ IngestionNode::IngestionNode(const rclcpp::NodeOptions & options)
   }
 
   filter_.set_debug(debug_);
+
+  // Startup banner: one-line dump of the parameters that decide whether pose ever
+  // publishes. Designed for "why is nothing coming out?" diagnosis — the values here,
+  // plus the GT CSV span logged above, are usually enough to spot the issue.
+  RCLCPP_INFO(
+    this->get_logger(),
+    "ros2qnukf ingestion ready | path_gt_csv=%s gt_rows=%zu | "
+    "pseudo_feature_count=%d pseudo_noise_stddev=%.4f | "
+    "P0_diag[0]=%.4f cam_to_imu_dt_sec=%.6f gt_csv_edge_tolerance_sec=%.6f | "
+    "use_stereo=%s init_bias_from_gt_csv=%s debug=%s",
+    path_gt_csv_.c_str(),
+    gt_csv_trajectory_.size(),
+    pseudo_feature_count_,
+    pseudo_noise_stddev_,
+    initial_covariance_diagonal_.front(),
+    cam_to_imu_dt_sec_,
+    gt_csv_edge_tolerance_sec_,
+    use_stereo_ ? "true" : "false",
+    init_bias_from_gt_csv_ ? "true" : "false",
+    debug_ ? "true" : "false");
 }
 
 void IngestionNode::imu_callback(sensor_msgs::msg::Imu::ConstSharedPtr msg)
@@ -366,7 +412,6 @@ void IngestionNode::imu_callback(sensor_msgs::msg::Imu::ConstSharedPtr msg)
     msg->linear_acceleration.x,
     msg->linear_acceleration.y,
     msg->linear_acceleration.z};
-  imu_history_.push_back(measurement);
   if (!logged_first_imu) {
     RCLCPP_INFO(
       this->get_logger(),
@@ -374,6 +419,29 @@ void IngestionNode::imu_callback(sensor_msgs::msg::Imu::ConstSharedPtr msg)
       measurement.stamp.seconds());
     logged_first_imu = true;
   }
+
+  // Pre-GT gating: bags often start seconds before the GT CSV span (EuRoC tail-cut
+  // CSVs in OpenVINS typically lag the bag by ~1 s). Until the IMU stamp enters the
+  // CSV bounds (modulo tolerance), drop the sample — buffering it would only inflate
+  // imu_history_ and a predict before the first update is meaningless.
+  if (!filter_.initialized() && !gt_csv_trajectory_.empty()) {
+    const auto first_gt = gt_csv_trajectory_.front().stamp;
+    const auto pre_gap_sec = (first_gt - measurement.stamp).seconds();
+    if (pre_gap_sec > gt_csv_edge_tolerance_sec_) {
+      static rclcpp::Clock kPreGtImuClock{RCL_STEADY_TIME};
+      RCLCPP_INFO_THROTTLE(
+        this->get_logger(),
+        kPreGtImuClock,
+        1000,
+        "Discarding IMU before GT CSV start (gap=%.3f s, tolerance=%.3f s). "
+        "Waiting for IMU to enter CSV span.",
+        pre_gap_sec,
+        gt_csv_edge_tolerance_sec_);
+      return;
+    }
+  }
+
+  imu_history_.push_back(measurement);
 
   if (!filter_.initialized()) {
     try {
@@ -391,6 +459,8 @@ void IngestionNode::imu_callback(sensor_msgs::msg::Imu::ConstSharedPtr msg)
         logged_init_success = true;
       }
     } catch (const std::exception & e) {
+      // The pre-GT gate above means this is genuinely unexpected (post-CSV stamp,
+      // unsorted CSV, etc.). Log and rethrow to surface it.
       RCLCPP_ERROR(
         this->get_logger(),
         "Initialization lookup failed at imu stamp %.9f: %s",
@@ -442,29 +512,66 @@ void IngestionNode::drain_pending_stereo_frames_locked()
 
 bool IngestionNode::try_process_stereo_frame(const rclcpp::Time & frame_stamp)
 {
-  static bool logged_waiting_for_init = false;
+  static rclcpp::Clock kInitWaitClock{RCL_STEADY_TIME};
   static rclcpp::Time last_imu_lag_log{0, 0, RCL_ROS_TIME};
   static std::size_t published_pose_count = 0U;
 
-  if (!filter_.initialized()) {
-    if (!logged_waiting_for_init) {
-      RCLCPP_INFO(
+  // Pre/post-GT gating: drop stereo frames whose stamp is outside the CSV span
+  // (beyond tolerance). Returning `true` pops the frame off the queue instead of
+  // blocking on it — these frames will never become valid. End-of-bag is a real
+  // case: EuRoC cameras keep delivering frames a few ms past the last GT row.
+  if (!gt_csv_trajectory_.empty()) {
+    const auto first_gt = gt_csv_trajectory_.front().stamp;
+    const auto last_gt = gt_csv_trajectory_.back().stamp;
+    const auto pre_gap_sec = (first_gt - frame_stamp).seconds();
+    const auto post_gap_sec = (frame_stamp - last_gt).seconds();
+    if (pre_gap_sec > gt_csv_edge_tolerance_sec_) {
+      static rclcpp::Clock kPreGtStereoClock{RCL_STEADY_TIME};
+      RCLCPP_INFO_THROTTLE(
         this->get_logger(),
-        "Stereo frame waiting for initialization. frame_stamp=%.9f",
+        kPreGtStereoClock,
+        1000,
+        "Dropping stereo frame before GT CSV start (gap=%.3f s, frame_stamp=%.9f).",
+        pre_gap_sec,
         frame_stamp.seconds());
-      logged_waiting_for_init = true;
+      return true;
     }
+    if (post_gap_sec > gt_csv_edge_tolerance_sec_) {
+      static rclcpp::Clock kPostGtStereoClock{RCL_STEADY_TIME};
+      RCLCPP_INFO_THROTTLE(
+        this->get_logger(),
+        kPostGtStereoClock,
+        1000,
+        "Dropping stereo frame after GT CSV end (gap=%.3f s, frame_stamp=%.9f).",
+        post_gap_sec,
+        frame_stamp.seconds());
+      return true;
+    }
+  }
+
+  if (!filter_.initialized()) {
+    RCLCPP_WARN_THROTTLE(
+      this->get_logger(),
+      kInitWaitClock,
+      5000,
+      "Stereo frame waiting for filter initialization (no IMU inside CSV bounds yet). "
+      "frame_stamp=%.9f pending=%zu",
+      frame_stamp.seconds(),
+      pending_stereo_frame_stamps_.size());
     return false;
   }
-  logged_waiting_for_init = false;
 
   if (imu_history_.empty()) {
     throw std::runtime_error(
       "IMU history is empty. Cannot process stereo frame.");
   }
 
+  // Compare on raw nanoseconds so a clock-type mismatch (e.g. ROS_TIME vs STEADY_TIME
+  // when sim_time is misconfigured) does not throw inside rclcpp::Time::operator<.
+  // Equality is treated as "covered" (proceed) — required so default cam_to_imu_dt_sec
+  // = 0 does not deadlock on bags whose camera/IMU stamps coincide.
   const auto target_imu_stamp = frame_stamp + rclcpp::Duration::from_seconds(cam_to_imu_dt_sec_);
-  if (imu_history_.back().stamp < target_imu_stamp) {
+  if (imu_history_.back().stamp.nanoseconds() < target_imu_stamp.nanoseconds()) {
     if (
       last_imu_lag_log.nanoseconds() == 0 ||
       std::fabs((frame_stamp - last_imu_lag_log).seconds()) > 0.2)
@@ -526,8 +633,8 @@ QnukfFilter::PseudoVisionMeasurement IngestionNode::build_pseudo_vision_measurem
   measurement.world_points = pseudo_world_points_;
   measurement.body_points.reserve(pseudo_world_points_.size());
 
-  const auto rotation_body_to_world = gt_pose.orientation.toRotationMatrix();
-  const auto rotation_world_to_body = rotation_body_to_world.transpose();
+  const Eigen::Matrix3d rotation_body_to_world = gt_pose.orientation.toRotationMatrix();
+  const Eigen::Matrix3d rotation_world_to_body = rotation_body_to_world.transpose();
   for (const auto & world_point : pseudo_world_points_) {
     Eigen::Vector3d body_point = rotation_world_to_body * (world_point - gt_pose.position);
     body_point.x() += noise_distribution_(random_engine_) * pseudo_noise_stddev_;
@@ -685,7 +792,7 @@ void IngestionNode::publish_filter_estimate(const rclcpp::Time & stamp)
   const auto filter_state = filter_.state();
   geometry_msgs::msg::PoseStamped message{};
   message.header.stamp = stamp;
-  message.header.frame_id = "world";
+  message.header.frame_id = world_frame_;
   message.pose.position.x = filter_state.position.x();
   message.pose.position.y = filter_state.position.y();
   message.pose.position.z = filter_state.position.z();
@@ -699,6 +806,20 @@ void IngestionNode::publish_filter_estimate(const rclcpp::Time & stamp)
     message_cov.header = message.header;
     message_cov.pose.pose = message.pose;
     estimate_pose_cov_pub_->publish(message_cov);
+  }
+  if (tf_broadcaster_) {
+    geometry_msgs::msg::TransformStamped tf_msg{};
+    tf_msg.header.stamp = stamp;
+    tf_msg.header.frame_id = world_frame_;
+    tf_msg.child_frame_id = estimate_tf_frame_;
+    tf_msg.transform.translation.x = filter_state.position.x();
+    tf_msg.transform.translation.y = filter_state.position.y();
+    tf_msg.transform.translation.z = filter_state.position.z();
+    tf_msg.transform.rotation.w = filter_state.orientation.w();
+    tf_msg.transform.rotation.x = filter_state.orientation.x();
+    tf_msg.transform.rotation.y = filter_state.orientation.y();
+    tf_msg.transform.rotation.z = filter_state.orientation.z();
+    tf_broadcaster_->sendTransform(tf_msg);
   }
   estimate_path_msg_.header.stamp = stamp;
   estimate_path_msg_.poses.push_back(message);

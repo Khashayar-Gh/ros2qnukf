@@ -34,6 +34,12 @@
   <arg name="gt_align_tf_parent" default="world"/>
   <arg name="gt_align_tf_child" default="gt_aligned"/>
   <arg name="cam_to_imu_dt_sec" default="0.0"/>
+  <arg name="gt_csv_edge_tolerance_sec" default="0.005"/>
+  <arg name="publish_estimate_tf" default="true"/>
+  <arg name="estimate_tf_frame" default="qnukf_estimate"/>
+  <arg name="publish_gt_tf" default="true"/>
+  <arg name="gt_tf_frame" default="ov_msckf_gt"/>
+  <arg name="world_frame" default="world"/>
   <arg name="debug" default="false"/>
   <arg name="path_publish_period_sec" default="0.0"/>
   <arg name="sensor_qos_depth" default="10"/>
@@ -79,6 +85,10 @@
     <param name="camera_qos_reliable" value="$(var camera_qos_reliable)"/>
     <param name="init_bias_from_gt_csv" value="$(var init_bias_from_gt_csv)"/>
     <param name="path_gt_csv" value="$(var path_gt_csv)"/>
+    <param name="gt_csv_edge_tolerance_sec" value="$(var gt_csv_edge_tolerance_sec)"/>
+    <param name="publish_estimate_tf" value="$(var publish_estimate_tf)"/>
+    <param name="estimate_tf_frame" value="$(var estimate_tf_frame)"/>
+    <param name="world_frame" value="$(var world_frame)"/>
   </node>
 
   <node
@@ -92,6 +102,9 @@
     <param name="gt_pose_topic" value="$(var gt_pose_topic)"/>
     <param name="gt_path_topic" value="$(var gt_path_topic)"/>
     <param name="publish_rate_hz" value="$(var gt_csv_publish_rate_hz)"/>
+    <param name="publish_gt_tf" value="$(var publish_gt_tf)"/>
+    <param name="gt_tf_frame" value="$(var gt_tf_frame)"/>
+    <param name="frame_id" value="$(var world_frame)"/>
   </node>
 
   <node

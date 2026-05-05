@@ -4,20 +4,34 @@ ros2qnukf_ingestion:
     accel_noise_stddev: 0.02828
     gyro_bias_rw_stddev: 0.000001371
     accel_bias_rw_stddev: 0.0002121
-    pseudo_noise_stddev: 1.0e0
+    # Python reference DeepUKF-VIN uses pts_std = 0.3 for the pseudo-vision update.
+    pseudo_noise_stddev: 3.0e-1
+    # P0: block-diagonal mirroring Python's diag(900,60,10,0,0) with much smaller
+    # absolute scales. Diagnostic instrumentation showed |z-zhat| ≈ 100 on the very
+    # first update with uniform 0.1 — the negative central UKF cov weight (w_0 = -6)
+    # amplifies the measurement-model nonlinearity over the sigma attitude spread,
+    # which with sqrt(3*P_att) is sqrt(0.3) = 0.55 rad ≈ 31°. That inflates zhat,
+    # the resulting attitude corrections approach 1 rad in 2 updates, and after a
+    # few such updates the body frame is misaligned enough that gravity-aware IMU
+    # integration sends the position estimate to km-scale.
+    # Smaller attitude P0 keeps sigma_att spread under ~10°, removing the cascade.
     initial_covariance_diagonal:
-      - 1.0e0 # r1
-      - 1.0e0
-      - 1.0e0
-      - 1.0e0 # p1
-      - 1.0e0
-      - 1.0e0
-      - 1.0e0 # v1
-      - 1.0e0
-      - 1.0e0
-      - 1.0e0 # gyro bias 1
-      - 1.0e0
-      - 1.0e0
-      - 1.0e0 # accel bias 1
-      - 1.0e0
-      - 1.0e0
+      - 1.0e-2 # r1 (attitude: smaller P0 → sigma spread sqrt(3*0.01) = 0.17 rad ≈ 10°)
+      - 1.0e-2
+      - 1.0e-2
+      - 1.0e-1 # p1 (position)
+      - 1.0e-1
+      - 1.0e-1
+      - 1.0e-1 # v1 (velocity)
+      - 1.0e-1
+      - 1.0e-1
+      - 1.0e-8 # gyro bias 1 (pinned, matches Python's zero block)
+      - 1.0e-8
+      - 1.0e-8
+      - 1.0e-8 # accel bias 1 (pinned, matches Python's zero block)
+      - 1.0e-8
+      - 1.0e-8
+    # GT CSV strict bracketing tolerance (seconds). When a sensor stamp falls outside
+    # the CSV time span by no more than this much, clamp to the first/last row instead
+    # of throwing. Throws beyond this. Handles microsecond-scale bag/CSV skew.
+    gt_csv_edge_tolerance_sec: 0.005

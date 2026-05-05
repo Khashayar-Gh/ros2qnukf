@@ -21,6 +21,7 @@ find_package(nav_msgs REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(tf2_ros REQUIRED)
 find_package(visualization_msgs REQUIRED)
 
 add_executable(ros2qnukf_ingestion_node
@@ -51,6 +52,7 @@ ament_target_dependencies(ros2qnukf_ingestion_node
   rclcpp
   sensor_msgs
   std_msgs
+  tf2_ros
   visualization_msgs
 )
 
@@ -58,6 +60,7 @@ ament_target_dependencies(ros2qnukf_gt_csv_publisher
   geometry_msgs
   nav_msgs
   rclcpp
+  tf2_ros
 )
 
 target_link_libraries(ros2qnukf_ingestion_node Eigen3::Eigen)

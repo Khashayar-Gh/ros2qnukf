@@ -7,6 +7,8 @@
 #include <sstream>
 #include <stdexcept>
 
+#include <geometry_msgs/msg/transform_stamped.hpp>
+
 namespace ros2qnukf
 {
 
@@ -21,6 +23,8 @@ GtCsvPublisherNode::GtCsvPublisherNode(const rclcpp::NodeOptions & options)
   publish_path_ = this->declare_parameter<bool>("publish_path", publish_path_);
   max_path_length_ = static_cast<int>(std::max<int64_t>(
       16, this->declare_parameter<int64_t>("max_path_length", max_path_length_)));
+  publish_gt_tf_ = this->declare_parameter<bool>("publish_gt_tf", publish_gt_tf_);
+  gt_tf_frame_ = this->declare_parameter<std::string>("gt_tf_frame", gt_tf_frame_);
 
   if (path_gt_csv_.empty()) {
     throw std::runtime_error("path_gt_csv must be set for ros2qnukf_gt_csv_publisher");
@@ -31,6 +35,9 @@ GtCsvPublisherNode::GtCsvPublisherNode(const rclcpp::NodeOptions & options)
   gt_pose_pub_ = this->create_publisher<geometry_msgs::msg::PoseStamped>(gt_pose_topic_, 10);
   gt_path_pub_ = this->create_publisher<nav_msgs::msg::Path>(gt_path_topic_, 2);
   gt_path_msg_.header.frame_id = frame_id_;
+  if (publish_gt_tf_) {
+    tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
+  }
 
   const auto period = std::chrono::duration<double>(1.0 / publish_rate_hz_);
   timer_ = this->create_wall_timer(
@@ -140,6 +147,21 @@ void GtCsvPublisherNode::timer_callback()
   pose.pose.orientation.y = sample.orientation.y();
   pose.pose.orientation.z = sample.orientation.z();
   gt_pose_pub_->publish(pose);
+
+  if (tf_broadcaster_) {
+    geometry_msgs::msg::TransformStamped tf_msg{};
+    tf_msg.header.stamp = now;
+    tf_msg.header.frame_id = frame_id_;
+    tf_msg.child_frame_id = gt_tf_frame_;
+    tf_msg.transform.translation.x = sample.position.x();
+    tf_msg.transform.translation.y = sample.position.y();
+    tf_msg.transform.translation.z = sample.position.z();
+    tf_msg.transform.rotation.w = sample.orientation.w();
+    tf_msg.transform.rotation.x = sample.orientation.x();
+    tf_msg.transform.rotation.y = sample.orientation.y();
+    tf_msg.transform.rotation.z = sample.orientation.z();
+    tf_broadcaster_->sendTransform(tf_msg);
+  }
 
   if (publish_path_ && gt_path_pub_) {
     gt_path_msg_.header = pose.header;

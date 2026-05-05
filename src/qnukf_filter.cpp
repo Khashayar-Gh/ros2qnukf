@@ -10,6 +10,7 @@
 #include <Eigen/Eigenvalues>
 #include <Eigen/SVD>
 #include <unsupported/Eigen/MatrixFunctions>
+#include <rclcpp/clock.hpp>
 #include <rclcpp/logging.hpp>
 
 namespace ros2qnukf
@@ -20,10 +21,20 @@ namespace
 
 const auto kFilterLogger = rclcpp::get_logger("ros2qnukf.qnukf_filter");
 
+// Moore-Penrose pseudo-inverse with the same zero-clip behaviour as torch.pinverse:
+// singular values below tol = eps * max(rows,cols) * sigma_max are clipped to zero
+// in the inverse (instead of throwing). Mirrors DeepUKF-VIN/QNUKF.py's reliance on
+// torch.pinverse so a rank-deficient measurement covariance does not abort the run.
 Eigen::MatrixXd matrix_pseudo_inverse(const Eigen::MatrixXd & matrix)
 {
   if (matrix.rows() != matrix.cols()) {
     throw std::invalid_argument("matrix_pseudo_inverse: matrix must be square.");
+  }
+  if (!matrix.allFinite()) {
+    throw std::runtime_error(
+      "matrix_pseudo_inverse: input contains non-finite values (NaN/Inf). The "
+      "measurement covariance blew up — check sigma-point spread (P0 too large or "
+      "UKF lambda mis-set).");
   }
   Eigen::JacobiSVD<Eigen::MatrixXd> svd(
     matrix, Eigen::ComputeThinU | Eigen::ComputeThinV);
@@ -42,14 +53,25 @@ Eigen::MatrixXd matrix_pseudo_inverse(const Eigen::MatrixXd & matrix)
     std::numeric_limits<double>::epsilon() *
     static_cast<double>(std::max(matrix.rows(), matrix.cols())) * max_singular;
 
-  const double min_singular = singular_values.minCoeff();
-  if (min_singular <= tolerance) {
-    throw std::runtime_error("matrix_pseudo_inverse: matrix is singular or near-singular.");
-  }
-
   Eigen::VectorXd inv_singular = Eigen::VectorXd::Zero(singular_values.size());
+  Eigen::Index clipped = 0;
   for (Eigen::Index idx = 0; idx < singular_values.size(); ++idx) {
-    inv_singular(idx) = 1.0 / singular_values(idx);
+    if (singular_values(idx) > tolerance) {
+      inv_singular(idx) = 1.0 / singular_values(idx);
+    } else {
+      ++clipped;
+    }
+  }
+  if (clipped > 0) {
+    static rclcpp::Clock kThrottleClock{RCL_STEADY_TIME};
+    RCLCPP_WARN_THROTTLE(
+      kFilterLogger,
+      kThrottleClock,
+      2000,
+      "matrix_pseudo_inverse clipped %ld near-zero singular values (tol=%.3e, sigma_max=%.3e).",
+      static_cast<long>(clipped),
+      tolerance,
+      max_singular);
   }
 
   return svd.matrixV() * inv_singular.asDiagonal() * svd.matrixU().transpose();
@@ -214,8 +236,29 @@ void QnukfFilter::predict_step(const ImuMeasurement & prev, const ImuMeasurement
     return;
   }
   const auto dt = (curr.stamp - prev.stamp).seconds();
+  static rclcpp::Clock kPredictDtClock{RCL_STEADY_TIME};
+  if (dt <= 0.0) {
+    RCLCPP_WARN_THROTTLE(
+      kFilterLogger,
+      kPredictDtClock,
+      2000,
+      "predict_step skipped: non-positive dt=%.9f s (out-of-order or duplicate IMU stamps).",
+      dt);
+    return;
+  }
   if (dt <= 1e-6) {
     return;
+  }
+  // EuRoC IMU is 200 Hz → typical dt ≈ 5 ms. A dt > 100 ms means we missed many samples
+  // (queue backpressure, dropped messages); the integration is still valid but the
+  // covariance grows fast — log so the user can see the cause of any divergence.
+  if (dt > 0.1) {
+    RCLCPP_WARN_THROTTLE(
+      kFilterLogger,
+      kPredictDtClock,
+      2000,
+      "predict_step large dt=%.6f s (expected ~0.005 s); IMU stream may be lagging.",
+      dt);
   }
   predict_one_step_unscented(curr, dt);
   ++imu_count_;
@@ -237,6 +280,10 @@ void QnukfFilter::predict_one_step_unscented(const ImuMeasurement & current,
     Eigen::Matrix3d::Identity() * accel_noise_stddev_ * accel_noise_stddev_ / safe_dt;
 
   const auto sqrt_cov = matrix_sqrt_psd(augmented_cov * ukf_scaling_);
+  if (!sqrt_cov.allFinite()) {
+    throw std::runtime_error(
+      "predict_one_step_unscented: sqrt_cov has non-finite values after matrix_sqrt_psd.");
+  }
   Eigen::MatrixXd sigma_augmented = Eigen::MatrixXd::Zero(kAugmentedDim, ukf_sigma_count_);
   sigma_augmented.col(0) = augmented_mean;
   for (int idx = 0; idx < kAugmentedErrorDim; ++idx) {
@@ -261,6 +308,11 @@ void QnukfFilter::predict_one_step_unscented(const ImuMeasurement & current,
       gravity_magnitude_);
     sigma_predicted_state.col(idx) = state_to_vector(propagated);
   }
+  if (!sigma_predicted_state.allFinite()) {
+    throw std::runtime_error(
+      "predict_one_step_unscented: propagated sigma states have non-finite values "
+      "(check propagate_sigma_point: matrix exp / quaternion path).");
+  }
   predicted_sigma_points_ = sigma_predicted_state;
   predicted_sigma_points_valid_ = true;
 
@@ -273,6 +325,12 @@ void QnukfFilter::predict_one_step_unscented(const ImuMeasurement & current,
       sigma_predicted_state(3, idx)};
   }
   const auto mean_quat = weighted_quaternion_average(sigma_quats, ukf_weights_mean_);
+  if (!std::isfinite(mean_quat.w()) || !std::isfinite(mean_quat.x()) ||
+    !std::isfinite(mean_quat.y()) || !std::isfinite(mean_quat.z()))
+  {
+    throw std::runtime_error(
+      "predict_one_step_unscented: weighted_quaternion_average returned non-finite quaternion.");
+  }
 
   Eigen::VectorXd mean_state = Eigen::VectorXd::Zero(kNominalDim);
   mean_state(0) = mean_quat.w();
@@ -310,7 +368,11 @@ void QnukfFilter::predict_one_step_unscented(const ImuMeasurement & current,
   velocity_ = predicted_state.velocity;
   gyro_bias_ = predicted_state.gyro_bias;
   accel_bias_ = predicted_state.accel_bias;
-  covariance_ = symmetrize(predicted_cov);
+  covariance_ = project_to_psd(predicted_cov);
+  if (!covariance_.allFinite()) {
+    throw std::runtime_error(
+      "predict_one_step_unscented: state covariance has non-finite values after PSD projection.");
+  }
 }
 
 void QnukfFilter::update_pseudo_vision(
@@ -347,7 +409,15 @@ void QnukfFilter::update_pseudo_vision(
   Eigen::MatrixXd sigma_measurements = Eigen::MatrixXd::Zero(dim_z, ukf_sigma_count_);
   for (int sigma_idx = 0; sigma_idx < ukf_sigma_count_; ++sigma_idx) {
     const auto sigma_state = state_from_vector(predicted_sigma_points_.col(sigma_idx));
-    const auto rotation_transpose = sigma_state.orientation.toRotationMatrix().transpose();
+    // IMPORTANT: materialize the rotation matrix into a concrete `Matrix3d`. With
+    // `auto rotation_transpose = q.toRotationMatrix().transpose()`, Eigen returns a
+    // `Transpose<const Matrix3d>` expression that *references* the temporary
+    // `Matrix3d` returned by `toRotationMatrix()`. The temporary dies at the end of
+    // the statement, so subsequent uses dereference dangling memory and produce
+    // garbage measurements (caught by E1 diagnostic: |z-zhat| ≈ 100 from the very
+    // first update because every feature's `R^T·v` was computed against junk).
+    const Eigen::Matrix3d rotation_transpose =
+      sigma_state.orientation.toRotationMatrix().transpose();
     for (std::size_t feature_idx = 0; feature_idx < feature_count; ++feature_idx) {
       const auto row = static_cast<int>(feature_idx * 3);
       const auto & point_world = measurement.world_points.at(feature_idx);
@@ -356,9 +426,19 @@ void QnukfFilter::update_pseudo_vision(
     }
   }
 
+  if (!sigma_measurements.allFinite()) {
+    throw std::runtime_error(
+      "update_pseudo_vision: sigma_measurements have non-finite values "
+      "(predicted_sigma_points may carry NaN from a previous step).");
+  }
+
   Eigen::VectorXd zhat = Eigen::VectorXd::Zero(dim_z);
   for (int sigma_idx = 0; sigma_idx < ukf_sigma_count_; ++sigma_idx) {
     zhat += ukf_weights_mean_(sigma_idx) * sigma_measurements.col(sigma_idx);
+  }
+  if (!zhat.allFinite()) {
+    throw std::runtime_error(
+      "update_pseudo_vision: zhat has non-finite values.");
   }
 
   const auto sigma = measurement_noise_stddev;
@@ -369,6 +449,7 @@ void QnukfFilter::update_pseudo_vision(
     Pz += ukf_weights_cov_(sigma_idx) * (z_error * z_error.transpose());
   }
   Pz += R;
+  Pz = 0.5 * (Pz + Pz.transpose());
 
   Eigen::MatrixXd Pxz = Eigen::MatrixXd::Zero(kErrorDim, dim_z);
   const NominalState predicted_mean_state{
@@ -393,7 +474,7 @@ void QnukfFilter::update_pseudo_vision(
   apply_error_state(delta);
 
   covariance_ = covariance_ - K * Pz * K.transpose();
-  covariance_ = symmetrize(covariance_);
+  covariance_ = project_to_psd(covariance_);
   predicted_sigma_points_valid_ = false;
   ++stereo_count_;
 }
@@ -456,6 +537,11 @@ Eigen::MatrixXd QnukfFilter::matrix_sqrt_psd(const Eigen::MatrixXd & matrix) con
 
   if (matrix.rows() != matrix.cols()) {
     throw std::invalid_argument("matrix_sqrt_psd: matrix must be square.");
+  }
+  if (!matrix.allFinite()) {
+    throw std::runtime_error(
+      "matrix_sqrt_psd: input contains non-finite values (NaN/Inf). The covariance "
+      "blew up upstream — check predict-step dt, P0 magnitude, and sigma-point spread.");
   }
 
   Eigen::BDCSVD<Eigen::MatrixXd> svd(matrix, Eigen::ComputeFullU | Eigen::ComputeFullV);
@@ -633,6 +719,33 @@ Eigen::Matrix<double, 15, 15> QnukfFilter::symmetrize(
   return 0.5 * (matrix + matrix.transpose());
 }
 
+// Project a (nominally symmetric) covariance to the PSD cone by eigendecomposition,
+// clamping negative eigenvalues to kPsdFloor. Catches the slow drift of P below PSD
+// caused by repeated `P = P - K Pz Kᵀ` updates without Joseph stabilization.
+Eigen::Matrix<double, 15, 15> QnukfFilter::project_to_psd(
+  const Eigen::Matrix<double, 15, 15> & matrix)
+{
+  constexpr double kPsdFloor = 1e-10;
+  const auto symmetric = symmetrize(matrix);
+  Eigen::SelfAdjointEigenSolver<Eigen::Matrix<double, 15, 15>> solver(symmetric);
+  if (solver.info() != Eigen::Success) {
+    return symmetric;
+  }
+  Eigen::Matrix<double, 15, 1> eigenvalues = solver.eigenvalues();
+  bool any_clamped = false;
+  for (Eigen::Index idx = 0; idx < eigenvalues.size(); ++idx) {
+    if (eigenvalues(idx) < kPsdFloor) {
+      eigenvalues(idx) = kPsdFloor;
+      any_clamped = true;
+    }
+  }
+  if (!any_clamped) {
+    return symmetric;
+  }
+  return solver.eigenvectors() * eigenvalues.asDiagonal() *
+         solver.eigenvectors().transpose();
+}
+
 void QnukfFilter::apply_error_state(const Eigen::Matrix<double, 15, 1> & error_state)
 {
   orientation_ = q_p_r(orientation_, error_state.segment<3>(0));
@@ -640,6 +753,25 @@ void QnukfFilter::apply_error_state(const Eigen::Matrix<double, 15, 1> & error_s
   velocity_ += error_state.segment<3>(6);
   gyro_bias_ += error_state.segment<3>(9);
   accel_bias_ += error_state.segment<3>(12);
+
+  // q_p_r calls quaternion_cleanup internally, but a non-finite delta or wildly large
+  // rotation correction can still produce a non-unit quaternion. Catch and warn so the
+  // user sees that the filter is being driven by a pathological update.
+  const double q_norm = orientation_.norm();
+  if (!std::isfinite(q_norm) || std::fabs(q_norm - 1.0) > 1e-6) {
+    static rclcpp::Clock kQuatClock{RCL_STEADY_TIME};
+    RCLCPP_WARN_THROTTLE(
+      kFilterLogger,
+      kQuatClock,
+      2000,
+      "apply_error_state produced non-unit quaternion (|q|=%.6e); renormalizing.",
+      q_norm);
+    if (!std::isfinite(q_norm) || q_norm < 1e-12) {
+      orientation_ = Eigen::Quaterniond::Identity();
+    } else {
+      orientation_.normalize();
+    }
+  }
 }
 
 }  // namespace ros2qnukf

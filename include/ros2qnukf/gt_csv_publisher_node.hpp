@@ -4,11 +4,14 @@
 #include <string>
 #include <vector>
 
+#include <memory>
+
 #include <Eigen/Core>
 #include <Eigen/Geometry>
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <nav_msgs/msg/path.hpp>
 #include <rclcpp/rclcpp.hpp>
+#include <tf2_ros/transform_broadcaster.h>
 
 namespace ros2qnukf
 {
@@ -37,10 +40,13 @@ private:
   double publish_rate_hz_{60.0};
   bool publish_path_{true};
   int max_path_length_{16384};
+  bool publish_gt_tf_{true};
+  std::string gt_tf_frame_{"ov_msckf_gt"};
 
   std::vector<GtSample> samples_{};
   rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr gt_pose_pub_{};
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr gt_path_pub_{};
+  std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_{};
   rclcpp::TimerBase::SharedPtr timer_{};
   nav_msgs::msg::Path gt_path_msg_{};
 };
