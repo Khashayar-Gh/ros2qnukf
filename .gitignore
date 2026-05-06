@@ -10,3 +10,5 @@ log/
 *.swp
 *.swo
 *~
+
+readme_internal.md
