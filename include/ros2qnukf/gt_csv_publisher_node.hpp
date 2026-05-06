@@ -34,14 +34,14 @@ private:
   GtSample interpolate(double t_sec) const;
 
   std::string path_gt_csv_{};
-  std::string gt_pose_topic_{"/ov_msckf/posegt"};
-  std::string gt_path_topic_{"/ov_msckf/pathgt"};
+  std::string gt_pose_topic_{"/ros2qnukf/pose_gt"};
+  std::string gt_path_topic_{"/ros2qnukf/path_gt"};
   std::string frame_id_{"world"};
   double publish_rate_hz_{60.0};
   bool publish_path_{true};
   int max_path_length_{16384};
   bool publish_gt_tf_{true};
-  std::string gt_tf_frame_{"ov_msckf_gt"};
+  std::string gt_tf_frame_{"qnukf_gt"};
 
   std::vector<GtSample> samples_{};
   rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr gt_pose_pub_{};

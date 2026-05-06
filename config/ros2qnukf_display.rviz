@@ -25,14 +25,6 @@ Visualization Manager:
       Enabled: true
       Topic: /cam1/image_raw
       Unreliable: true
-    - Class: rviz_default_plugins/Pose
-      Name: Qnukf Pose
-      Enabled: true
-      Topic: /ros2qnukf/pose_estimate
-      Unreliable: false
-      Arrow Color: 25; 255; 0
-      Axes Length: 0.4
-      Axes Radius: 0.03
     - Class: rviz_default_plugins/Path
       Name: Qnukf Path
       Enabled: true
@@ -59,16 +51,9 @@ Visualization Manager:
         Reliability Policy: Reliable
         Value: /ros2qnukf/pseudo_measurements_gt
     - Class: rviz_default_plugins/Path
-      Name: GT Path (Aligned)
+      Name: GT Path
       Enabled: true
-      Topic: /ros2qnukf/pathgt_aligned
-      Unreliable: false
-      Color: 255; 85; 255
-      Buffer Length: 1
-    - Class: rviz_default_plugins/Path
-      Name: GT Path (Raw)
-      Enabled: false
-      Topic: /ov_msckf/pathgt
+      Topic: /ros2qnukf/path_gt
       Unreliable: false
       Color: 0; 255; 255
       Buffer Length: 1

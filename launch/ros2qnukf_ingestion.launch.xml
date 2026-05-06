@@ -13,9 +13,8 @@
   <arg name="imu_topic" default="/imu0"/>
   <arg name="left_image_topic" default="/cam0/image_raw"/>
   <arg name="right_image_topic" default="/cam1/image_raw"/>
-  <arg name="gt_pose_topic" default="/ov_msckf/posegt"/>
-  <arg name="gt_path_topic" default="/ov_msckf/pathgt"/>
-  <arg name="gt_transform_topic" default="/vicon/firefly_sbx/firefly_sbx"/>
+  <arg name="gt_pose_topic" default="/ros2qnukf/pose_gt"/>
+  <arg name="gt_path_topic" default="/ros2qnukf/path_gt"/>
   <arg name="gt_from_csv_enable" default="true"/>
   <arg name="path_gt_csv" default="/home/kash/workspace/catkin_ws_ov_copy/src/open_vins/ov_data/euroc_mav/$(var dataset).csv"/>
   <arg name="gt_csv_publish_rate_hz" default="60.0"/>
@@ -23,22 +22,12 @@
   <arg name="estimate_pose_topic" default="/ros2qnukf/pose_estimate"/>
   <arg name="estimate_pose_cov_topic" default="/ros2qnukf/pose_estimate_cov"/>
   <arg name="estimate_path_topic" default="/ros2qnukf/path_estimate"/>
-  <arg name="initial_realign_enable" default="true"/>
-  <arg name="gt_aligned_pose_topic" default="/ros2qnukf/posegt_aligned"/>
-  <arg name="gt_aligned_path_topic" default="/ros2qnukf/pathgt_aligned"/>
-  <arg name="gt_align_type" default="posyaw"/>
-  <arg name="gt_align_assoc_dt" default="0.02"/>
-  <arg name="gt_align_min_pairs" default="8"/>
-  <arg name="gt_align_lock_pairs" default="40"/>
-  <arg name="gt_align_publish_tf" default="true"/>
-  <arg name="gt_align_tf_parent" default="world"/>
-  <arg name="gt_align_tf_child" default="gt_aligned"/>
   <arg name="cam_to_imu_dt_sec" default="0.0"/>
   <arg name="gt_csv_edge_tolerance_sec" default="0.005"/>
   <arg name="publish_estimate_tf" default="true"/>
   <arg name="estimate_tf_frame" default="qnukf_estimate"/>
   <arg name="publish_gt_tf" default="true"/>
-  <arg name="gt_tf_frame" default="ov_msckf_gt"/>
+  <arg name="gt_tf_frame" default="qnukf_gt"/>
   <arg name="world_frame" default="world"/>
   <arg name="debug" default="false"/>
   <arg name="path_publish_period_sec" default="0.0"/>
@@ -105,25 +94,6 @@
     <param name="publish_gt_tf" value="$(var publish_gt_tf)"/>
     <param name="gt_tf_frame" value="$(var gt_tf_frame)"/>
     <param name="frame_id" value="$(var world_frame)"/>
-  </node>
-
-  <node
-    if="$(var initial_realign_enable)"
-    pkg="qnukf_incomplete"
-    exec="initial_pose_realign_node"
-    name="initial_pose_realign"
-    output="screen">
-    <param name="est_topic" value="$(var estimate_pose_cov_topic)"/>
-    <param name="gt_topic" value="$(var gt_pose_topic)"/>
-    <param name="output_pose_topic" value="$(var gt_aligned_pose_topic)"/>
-    <param name="output_path_topic" value="$(var gt_aligned_path_topic)"/>
-    <param name="alignment_type" value="$(var gt_align_type)"/>
-    <param name="association_max_dt_sec" value="$(var gt_align_assoc_dt)"/>
-    <param name="min_pairs_for_alignment" value="$(var gt_align_min_pairs)"/>
-    <param name="lock_pairs" value="$(var gt_align_lock_pairs)"/>
-    <param name="publish_gt_aligned_tf" value="$(var gt_align_publish_tf)"/>
-    <param name="tf_parent_frame" value="$(var gt_align_tf_parent)"/>
-    <param name="tf_gt_aligned_frame" value="$(var gt_align_tf_child)"/>
   </node>
 
   <executable

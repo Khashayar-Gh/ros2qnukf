@@ -147,17 +147,18 @@ Common launch arguments:
 | `use_sim_time` | Keep **`true`** for bag playback with `/clock`. |
 | `rviz_enable` | `false` to skip RViz. |
 | `debug` | Reserved diagnostics flag. Kept for interface parity, but verbose debug logging is removed. |
-| `gt_from_csv_enable` | Launch built-in GT CSV publisher (`/ov_msckf/posegt`, `/ov_msckf/pathgt`). |
-| `path_gt_csv` | GT CSV path (default OpenVINS EuRoC CSV using `dataset`). |
+| `gt_from_csv_enable` | Launch built-in GT CSV publisher (`/ros2qnukf/pose_gt`, `/ros2qnukf/path_gt`). |
+| `gt_pose_topic`, `gt_path_topic` | Output topics for the GT publisher. Defaults: `/ros2qnukf/pose_gt`, `/ros2qnukf/path_gt`. |
+| `path_gt_csv` | GT CSV path (default points at the EuRoC CSV bundled with the OpenVINS data tree). |
 | `gt_csv_edge_tolerance_sec` | Tolerance (s) for clamping out-of-bounds stamps to the first/last CSV row instead of throwing. Default `0.005`. |
 | `gt_csv_publish_rate_hz` | GT CSV publish rate in Hz. |
 | `init_bias_from_gt_csv` | If true, initialize filter `b_w`/`b_a` from GT CSV dataset means (`b_w_*`, `b_a_*`). |
 | `path_publish_period_sec` | Path throttle; **`0`** = every pose update. |
 | `stereo_queue_max` | Max pending stereo timestamps (default **512**). |
-| `estimate_pose_cov_topic` | PoseWithCovariance output topic, used by GT realign helper node. |
-| `initial_realign_enable` | Run `initial_pose_realign_node` to publish GT aligned to estimate frame. |
-| `gt_aligned_pose_topic`, `gt_aligned_path_topic` | Output topics for aligned GT pose/path used in RViz comparison. |
-| `gt_align_*` | Alignment controls (`type`, association dt, min/lock pairs, TF publish + frame names). Default TF parent is `world` for RViz visibility with `Fixed Frame: world`. |
+| `estimate_pose_cov_topic` | PoseWithCovariance output topic for downstream consumers. |
+| `publish_estimate_tf`, `estimate_tf_frame` | Toggle + name for the `world → qnukf_estimate` transform broadcast on every pose update. |
+| `publish_gt_tf`, `gt_tf_frame` | Toggle + name for the `world → qnukf_gt` transform broadcast by the GT publisher. |
+| `world_frame` | Parent frame name for both TFs and for path/pose `frame_id` (default `world`). |
 
 Example:
 
@@ -227,14 +228,22 @@ Any **`lookup_gt_pose_from_csv_strict`** failure throws **`std::runtime_error`**
 
 | Topic | Type | Notes |
 |-------|------|--------|
-| `estimate_pose_topic` | `geometry_msgs/msg/PoseStamped` | Filter pose. |
-| `estimate_path_topic` | `nav_msgs/msg/Path` | Trajectory; may be throttled. |
-| `gt_feature_markers_topic` (see params) | `visualization_msgs/msg/MarkerArray` | **Noise-free** synthetic `pseudo_world_points_` in **`world`** (SPHERE_LIST); republished on **`gt_feature_markers_publish_hz`** timer, not on filter updates. |
-| `pseudo_measurement_markers_topic` (see params) | `visualization_msgs/msg/MarkerArray` | Pseudo measurement points projected into `world` from `body_points` with CSV-interpolated GT pose each successful stereo update. |
-| `gt_aligned_pose_topic` | `geometry_msgs/msg/PoseStamped` | Published by optional initial realign node when enabled. |
-| `gt_aligned_path_topic` | `nav_msgs/msg/Path` | Aligned GT trajectory in estimate frame. |
+| `estimate_pose_topic` (`/ros2qnukf/pose_estimate`) | `geometry_msgs/msg/PoseStamped` | Filter pose. |
+| `estimate_pose_cov_topic` (`/ros2qnukf/pose_estimate_cov`) | `geometry_msgs/msg/PoseWithCovarianceStamped` | Pose with (currently empty) covariance. |
+| `estimate_path_topic` (`/ros2qnukf/path_estimate`) | `nav_msgs/msg/Path` | Filter trajectory; may be throttled. |
+| `gt_pose_topic` (`/ros2qnukf/pose_gt`) | `geometry_msgs/msg/PoseStamped` | GT pose at current sim time, interpolated from the CSV. |
+| `gt_path_topic` (`/ros2qnukf/path_gt`) | `nav_msgs/msg/Path` | GT trajectory accumulated by the CSV publisher. |
+| `gt_feature_markers_topic` (`/ros2qnukf/gt_feature_points`) | `visualization_msgs/msg/MarkerArray` | **Noise-free** synthetic `pseudo_world_points_` in **`world`** (SPHERE_LIST); republished on **`gt_feature_markers_publish_hz`** timer, not on filter updates. |
+| `pseudo_measurement_markers_topic` (`/ros2qnukf/pseudo_measurements_gt`) | `visualization_msgs/msg/MarkerArray` | Pseudo measurement points projected into `world` from `body_points` with CSV-interpolated GT pose each successful stereo update. |
 
-Default **`frame_id`** for outputs: **`world`**.
+## TFs broadcast
+
+| Transform | Source | Notes |
+|-----------|--------|-------|
+| `world → qnukf_estimate` | Ingestion node, on each successful update | Latest filter pose. RViz can attach an axes triad here at the head of the estimate path. |
+| `world → qnukf_gt` | GT CSV publisher, on each timer tick | Interpolated GT pose at current sim time. |
+
+Default **`frame_id`** for outputs and TF parent: **`world`**.
 
 ---
 
