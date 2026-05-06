@@ -4,6 +4,8 @@ log/
 
 .vscode/
 .idea/
+.clangd
+*.code-workspace
 
 *.swp
 *.swo
