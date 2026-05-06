@@ -19,11 +19,11 @@ This package is the ROS 2 C++ counterpart of:
 
 <!-- **Video**: -->
 
-<video src="media/ros2qnukf_demo.mp4" controls width="720"></video>
+<!-- <video src="media/ros2qnukf_demo.mp4" controls width="720"></video> -->
 
-<!-- **GIF** (inline loop):
+<!-- **GIF** (inline loop):-->
 
-![Demo loop](media/ros2qnukf_demo.gif) -->
+![ros2 qnukf gif](media/ros2qnukf_demo.gif) 
 
 ## Current Status
 
