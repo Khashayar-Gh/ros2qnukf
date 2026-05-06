@@ -14,6 +14,17 @@ This package is the ROS 2 C++ counterpart of:
 - Numerically robust UKF update path in C++ with practical runtime safeguards.
 - Reproducible launch flow for dataset playback, estimate publishing, and visualization.
 
+## Demo
+
+
+<!-- **Video**: -->
+
+<video src="media/ros2qnukf_demo.mp4" controls width="720"></video>
+
+<!-- **GIF** (inline loop):
+
+![Demo loop](media/ros2qnukf_demo.gif) -->
+
 ## Current Status
 
 This implementation is functional for ROS 2 dataset bringup and localization experiments.
