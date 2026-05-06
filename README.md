@@ -26,15 +26,55 @@ This is intentional for the current phase and will be replaced by **stereo trian
 - Target distro is **ROS 2 Jazzy**.
 - Current measurement model uses pseudo visual landmarks, not true online feature triangulation yet.
 - EuRoC-style bag + GT CSV workflow is the primary tested path.
-- Launch defaults include machine-specific paths; override them on your machine.
+- Launch defaults resolve inside the package via `$(find-pkg-share ros2qnukf)`. Drop your bag and GT CSV under `dataset/<name>/` and `dataset/<name>.csv`, or override `bag_path` / `path_gt_csv` on the command line.
+
+## Requirements
+
+### System
+
+- Ubuntu 24.04.
+- **ROS 2 Jazzy**.
+- C++17 toolchain (GCC 11+ or Clang 14+).
+- CMake ≥ 3.8, `colcon`, `ament_cmake`.
+
+### Build dependencies
+
+Resolved via `rosdep` from [package.xml](package.xml):
+
+- `eigen` (Eigen3 ≥ 3.3)
+- `rclcpp`
+- `geometry_msgs`, `nav_msgs`, `sensor_msgs`, `std_msgs`, `visualization_msgs`
+- `message_filters`
+- `tf2_ros`
+
+### Runtime / launch dependencies
+
+- `launch`, `launch_ros`, `launch_xml`
+- `ros2 bag` (`ros2bag` + a storage plugin — `rosbag2_storage_mcap` or `rosbag2_storage_default_plugins`)
+- `rviz2` (only if `rviz_enable:=true`)
+
+### Data
+
+- From [OpenVINS EuRoC dataset page](https://docs.openvins.com/gs-datasets.html#gs-data-euroc), download both:
+  - ROS 2 bag data (`rosbag2`)
+  - Ground-truth CSV data
+- `ros2qnukf` already includes committed GT for `V2_01_easy` (`dataset/V2_01_easy.csv`), so you only need to download rosbag2 if you use default dataset naming.
+- An EuRoC-style ROS 2 bag (default expects `dataset/V2_01_easy/`).
+- A matching EuRoC GT CSV (default expects `dataset/V2_01_easy.csv`).
 
 ## Reproduce
 
-### 1) Prerequisites
+### 1) Install dependencies
 
-- Ubuntu with ROS 2 Jazzy installed.
-- Colcon workspace with this package under `src/`.
-- EuRoC-style ROS 2 bag and a matching GT CSV file.
+`colcon build` only compiles — it does **not** install system packages, so the deps above must be present before building. If you installed `ros-jazzy-desktop`, almost all of them are already on your system; the easiest way to fill in anything missing (notably `libeigen3-dev`) is `rosdep`, run from the workspace root (the directory that contains `src/`):
+
+```bash
+sudo rosdep init   # first-time setup only
+rosdep update
+rosdep install --from-paths src --ignore-src -r -y
+```
+
+This reads [package.xml](package.xml) and `apt install`s whatever is missing.
 
 ### 2) Build
 
@@ -47,6 +87,14 @@ source install/setup.bash
 ```
 
 ### 3) Run (full launch: bag + nodes + optional RViz)
+
+If your bag and CSV live under `dataset/<name>/` and `dataset/<name>.csv` inside the package, no overrides are needed — just pick the dataset name (defaults to `V2_01_easy`):
+
+```bash
+ros2 launch ros2qnukf ros2qnukf_ingestion.launch.xml dataset:=V2_01_easy
+```
+
+Otherwise, point the launch at any external bag + CSV:
 
 ```bash
 ros2 launch ros2qnukf ros2qnukf_ingestion.launch.xml \
