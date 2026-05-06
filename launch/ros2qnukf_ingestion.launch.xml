@@ -2,11 +2,11 @@
 <launch>
   <arg name="dataset" default="V2_01_easy"/>
   <arg name="bag_enable" default="true"/>
-  <arg name="bag_path" default="/home/kash/datasets/$(var dataset)"/>
+  <arg name="bag_path" default="$(find-pkg-share ros2qnukf)/dataset/$(var dataset)"/>
   <arg name="bag_rate" default="1.0"/>
   <arg name="bag_start" default="0.0"/>
   <arg name="rviz_enable" default="true"/>
-  <arg name="rviz_config" default="/home/kash/workspace/catkin_ws_ov_copy/src/ros2qnukf/config/ros2qnukf_display_2.rviz"/>
+  <arg name="rviz_config" default="$(find-pkg-share ros2qnukf)/config/ros2qnukf_display_2.rviz"/>
   <arg name="params_file" default="$(find-pkg-share ros2qnukf)/config/ros2qnukf_ingestion.params.yaml"/>
 
   <arg name="use_sim_time" default="true"/>
@@ -16,7 +16,7 @@
   <arg name="gt_pose_topic" default="/ros2qnukf/pose_gt"/>
   <arg name="gt_path_topic" default="/ros2qnukf/path_gt"/>
   <arg name="gt_from_csv_enable" default="true"/>
-  <arg name="path_gt_csv" default="/home/kash/workspace/catkin_ws_ov_copy/src/open_vins/ov_data/euroc_mav/$(var dataset).csv"/>
+  <arg name="path_gt_csv" default="$(find-pkg-share ros2qnukf)/dataset/$(var dataset).csv"/>
   <arg name="gt_csv_publish_rate_hz" default="60.0"/>
   <arg name="init_bias_from_gt_csv" default="true"/>
   <arg name="estimate_pose_topic" default="/ros2qnukf/pose_estimate"/>

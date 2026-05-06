@@ -88,6 +88,11 @@ install(
   DESTINATION share/${PROJECT_NAME}/launch
 )
 
+install(
+  DIRECTORY dataset/
+  DESTINATION share/${PROJECT_NAME}/dataset
+)
+
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
   # the following line skips the linter which checks for copyrights

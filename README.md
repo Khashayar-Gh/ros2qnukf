@@ -76,8 +76,8 @@ Expected core topics:
 
 - `/ros2qnukf/pose_estimate`
 - `/ros2qnukf/path_estimate`
-- `/ros2qnukf/pose_gt` (if GT CSV publisher enabled)
-- `/ros2qnukf/path_gt` (if GT CSV publisher enabled)
+- `/ros2qnukf/pose_gt`
+- `/ros2qnukf/path_gt`
 
 ## Configuration Notes
 
