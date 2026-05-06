@@ -90,11 +90,13 @@ private:
   double path_publish_period_sec_{0.0};
   bool camera_qos_reliable_{false};
   bool publish_gt_feature_markers_{true};
-  double gt_feature_marker_diameter_{0.12};
+  double gt_feature_marker_diameter_{0.06};
+  std::vector<double> gt_feature_marker_color_rgba_{0.2, 0.9, 0.5, 1.0};
   double gt_feature_markers_publish_hz_{5.0};
   std::string gt_feature_markers_topic_{"/ros2qnukf/gt_feature_points"};
   bool publish_pseudo_measurement_markers_{true};
-  double pseudo_measurement_marker_diameter_{0.08};
+  double pseudo_measurement_marker_diameter_{0.04};
+  std::vector<double> pseudo_measurement_marker_color_rgba_{1.0, 0.45, 0.15, 1.0};
   std::string pseudo_measurement_markers_topic_{"/ros2qnukf/pseudo_measurements_gt"};
   bool init_bias_from_gt_csv_{true};
   std::string path_gt_csv_{};

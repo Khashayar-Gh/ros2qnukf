@@ -11,6 +11,7 @@
 #include <random>
 #include <sstream>
 #include <stdexcept>
+#include <string>
 
 #include <geometry_msgs/msg/point.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
@@ -22,6 +23,32 @@ namespace ros2qnukf
 
 namespace
 {
+
+std::vector<double> declare_and_clamp_rgba_param(
+  rclcpp::Node * node,
+  const char * name,
+  std::vector<double> default_value)
+{
+  auto v = node->declare_parameter<std::vector<double>>(name, std::move(default_value));
+  if (v.size() != 4U) {
+    throw std::invalid_argument(
+      std::string{"Parameter "} + name + " must have exactly 4 values (RGBA in [0, 1]).");
+  }
+  for (auto & channel : v) {
+    channel = std::clamp(channel, 0.0, 1.0);
+  }
+  return v;
+}
+
+std_msgs::msg::ColorRGBA color_rgba_from_vector(const std::vector<double> & rgba)
+{
+  std_msgs::msg::ColorRGBA c;
+  c.r = static_cast<float>(rgba[0]);
+  c.g = static_cast<float>(rgba[1]);
+  c.b = static_cast<float>(rgba[2]);
+  c.a = static_cast<float>(rgba[3]);
+  return c;
+}
 
 std::optional<std::pair<Eigen::Vector3d, Eigen::Vector3d>> read_bias_means_from_gt_csv(
   const std::string & csv_path)
@@ -274,6 +301,14 @@ IngestionNode::IngestionNode(const rclcpp::NodeOptions & options)
     this->declare_parameter<double>(
       "pseudo_measurement_marker_diameter",
       pseudo_measurement_marker_diameter_));
+  gt_feature_marker_color_rgba_ = declare_and_clamp_rgba_param(
+    this,
+    "gt_feature_marker_color_rgba",
+    gt_feature_marker_color_rgba_);
+  pseudo_measurement_marker_color_rgba_ = declare_and_clamp_rgba_param(
+    this,
+    "pseudo_measurement_marker_color_rgba",
+    pseudo_measurement_marker_color_rgba_);
   gt_feature_markers_publish_hz_ = std::clamp(
     this->declare_parameter<double>("gt_feature_markers_publish_hz", gt_feature_markers_publish_hz_),
     0.1,
@@ -704,25 +739,16 @@ void IngestionNode::publish_gt_feature_markers(const rclcpp::Time & stamp)
   marker.scale.x = d;
   marker.scale.y = d;
   marker.scale.z = d;
+  marker.color = color_rgba_from_vector(gt_feature_marker_color_rgba_);
   marker.lifetime.sec = 0;
   marker.lifetime.nanosec = 0;
   marker.points.reserve(pseudo_world_points_.size());
-  marker.colors.reserve(pseudo_world_points_.size());
-  const auto denom =
-    pseudo_world_points_.size() > 1U ? static_cast<double>(pseudo_world_points_.size() - 1U) : 1.0;
-  for (std::size_t i = 0; i < pseudo_world_points_.size(); ++i) {
+  for (const auto & wp : pseudo_world_points_) {
     geometry_msgs::msg::Point p;
-    p.x = pseudo_world_points_[i].x();
-    p.y = pseudo_world_points_[i].y();
-    p.z = pseudo_world_points_[i].z();
+    p.x = wp.x();
+    p.y = wp.y();
+    p.z = wp.z();
     marker.points.push_back(p);
-    std_msgs::msg::ColorRGBA c;
-    const auto t = static_cast<float>(static_cast<double>(i) / denom);
-    c.r = 0.2F + 0.8F * t;
-    c.g = 0.9F;
-    c.b = 0.3F + 0.7F * (1.0F - t);
-    c.a = 1.0F;
-    marker.colors.push_back(c);
   }
   array.markers.push_back(marker);
   gt_feature_markers_pub_->publish(array);
@@ -752,32 +778,19 @@ void IngestionNode::publish_pseudo_measurement_markers_gt_frame(
   marker.scale.x = pseudo_measurement_marker_diameter_;
   marker.scale.y = pseudo_measurement_marker_diameter_;
   marker.scale.z = pseudo_measurement_marker_diameter_;
+  marker.color = color_rgba_from_vector(pseudo_measurement_marker_color_rgba_);
   marker.lifetime.sec = 0;
   marker.lifetime.nanosec = 0;
   marker.points.reserve(pseudo_measurement.body_points.size());
-  marker.colors.reserve(pseudo_measurement.body_points.size());
 
   const auto rotation_body_to_world = gt_pose.orientation.toRotationMatrix();
-  const auto denom =
-    pseudo_measurement.body_points.size() > 1U
-      ? static_cast<double>(pseudo_measurement.body_points.size() - 1U)
-      : 1.0;
-  for (std::size_t i = 0; i < pseudo_measurement.body_points.size(); ++i) {
-    const Eigen::Vector3d point_world =
-      rotation_body_to_world * pseudo_measurement.body_points[i] + gt_pose.position;
+  for (const auto & body_pt : pseudo_measurement.body_points) {
+    const Eigen::Vector3d point_world = rotation_body_to_world * body_pt + gt_pose.position;
     geometry_msgs::msg::Point p;
     p.x = point_world.x();
     p.y = point_world.y();
     p.z = point_world.z();
     marker.points.push_back(p);
-
-    std_msgs::msg::ColorRGBA c;
-    const auto t = static_cast<float>(static_cast<double>(i) / denom);
-    c.r = 1.0F;
-    c.g = 0.35F + 0.5F * (1.0F - t);
-    c.b = 0.1F + 0.8F * t;
-    c.a = 1.0F;
-    marker.colors.push_back(c);
   }
 
   array.markers.push_back(marker);

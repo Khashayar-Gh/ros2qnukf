@@ -15,16 +15,6 @@ Visualization Manager:
       Enabled: true
       Frame Timeout: 120
       Marker Scale: 1
-    - Class: rviz_default_plugins/Image
-      Name: Bag cam0
-      Enabled: true
-      Topic: /cam0/image_raw
-      Unreliable: true
-    - Class: rviz_default_plugins/Image
-      Name: Bag cam1
-      Enabled: true
-      Topic: /cam1/image_raw
-      Unreliable: true
     - Class: rviz_default_plugins/Path
       Name: Qnukf Path
       Enabled: true

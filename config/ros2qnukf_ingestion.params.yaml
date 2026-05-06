@@ -35,3 +35,9 @@ ros2qnukf_ingestion:
     # the CSV time span by no more than this much, clamp to the first/last row instead
     # of throwing. Throws beyond this. Handles microsecond-scale bag/CSV skew.
     gt_csv_edge_tolerance_sec: 0.005
+    # RViz MarkerArray SPHERE_LIST scale; tuned via this file (launch does not override).
+    gt_feature_marker_diameter: 0.06
+    pseudo_measurement_marker_diameter: 0.04
+    # Uniform RGBA [0,1] per marker type (launch does not override).
+    gt_feature_marker_color_rgba: [0.2, 0.9, 0.5, 1.0]
+    pseudo_measurement_marker_color_rgba: [1.0, 0.45, 0.15, 1.0]

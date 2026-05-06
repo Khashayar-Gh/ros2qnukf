@@ -38,11 +38,9 @@
   <arg name="pseudo_feature_count" default="50"/>
   <arg name="publish_gt_feature_markers" default="true"/>
   <arg name="gt_feature_markers_topic" default="/ros2qnukf/gt_feature_points"/>
-  <arg name="gt_feature_marker_diameter" default="0.12"/>
   <arg name="gt_feature_markers_publish_hz" default="5.0"/>
   <arg name="publish_pseudo_measurement_markers" default="true"/>
   <arg name="pseudo_measurement_markers_topic" default="/ros2qnukf/pseudo_measurements_gt"/>
-  <arg name="pseudo_measurement_marker_diameter" default="0.08"/>
   <arg name="use_stereo" default="true"/>
   <arg name="camera_qos_reliable" default="false"/>
 
@@ -65,11 +63,9 @@
     <param name="pseudo_feature_count" value="$(var pseudo_feature_count)"/>
     <param name="publish_gt_feature_markers" value="$(var publish_gt_feature_markers)"/>
     <param name="gt_feature_markers_topic" value="$(var gt_feature_markers_topic)"/>
-    <param name="gt_feature_marker_diameter" value="$(var gt_feature_marker_diameter)"/>
     <param name="gt_feature_markers_publish_hz" value="$(var gt_feature_markers_publish_hz)"/>
     <param name="publish_pseudo_measurement_markers" value="$(var publish_pseudo_measurement_markers)"/>
     <param name="pseudo_measurement_markers_topic" value="$(var pseudo_measurement_markers_topic)"/>
-    <param name="pseudo_measurement_marker_diameter" value="$(var pseudo_measurement_marker_diameter)"/>
     <param name="use_stereo" value="$(var use_stereo)"/>
     <param name="camera_qos_reliable" value="$(var camera_qos_reliable)"/>
     <param name="init_bias_from_gt_csv" value="$(var init_bias_from_gt_csv)"/>

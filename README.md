@@ -204,8 +204,12 @@ ros2 topic echo /ros2qnukf/pose_estimate --once
 | `sensor_qos_depth` | `10` | Subscriber history depth for sensor QoS. |
 | `path_publish_period_sec` | `0` | Path publish throttle (pose still every successful update). |
 | `pseudo_feature_count`, `pseudo_noise_stddev` | `50`, `0.3` (YAML) | Pseudo measurement count / noise scale (see `ros2qnukf_ingestion.params.yaml` for process-noise overrides). Default matches the Python reference `pts_std`. |
-| `publish_gt_feature_markers`, `gt_feature_markers_topic`, `gt_feature_marker_diameter`, `gt_feature_markers_publish_hz` | `true`, `/ros2qnukf/gt_feature_points`, `0.12`, `5.0` | Fixed landmarks published on a **ROS timer** (default 5 Hz), independent of stereo / filter; uses node clock (`use_sim_time` OK). Disable with `publish_gt_feature_markers:=false`. |
-| `publish_pseudo_measurement_markers`, `pseudo_measurement_markers_topic`, `pseudo_measurement_marker_diameter` | `true`, `/ros2qnukf/pseudo_measurements_gt`, `0.08` | Per-stereo pseudo measurements (`body_points`) transformed to `world` using CSV-interpolated GT pose for RViz. |
+| `publish_gt_feature_markers`, `gt_feature_markers_topic`, `gt_feature_markers_publish_hz` | `true`, `/ros2qnukf/gt_feature_points`, `5.0` (launch) | Fixed landmarks published on a **ROS timer** (default 5 Hz), independent of stereo / filter; uses node clock (`use_sim_time` OK). Disable with `publish_gt_feature_markers:=false`. |
+| `gt_feature_marker_diameter` | `0.06` (`ros2qnukf_ingestion.params.yaml`) | RViz **MarkerArray** sphere scale for synthetic world landmarks; edit YAML and relaunch (no rebuild). |
+| `gt_feature_marker_color_rgba` | four doubles, e.g. `[0.2, 0.9, 0.5, 1.0]` (YAML) | Single uniform **RGBA** in `[0, 1]` for all GT synthetic landmark spheres; launch does not override. |
+| `publish_pseudo_measurement_markers`, `pseudo_measurement_markers_topic` | `true`, `/ros2qnukf/pseudo_measurements_gt` (launch) | Enable/topic for per-stereo pseudo-measurement markers. |
+| `pseudo_measurement_marker_diameter` | `0.04` (`ros2qnukf_ingestion.params.yaml`) | RViz sphere scale for pseudo measurements projected into `world` with CSV GT pose; edit YAML and relaunch (no rebuild). |
+| `pseudo_measurement_marker_color_rgba` | four doubles, e.g. `[1.0, 0.45, 0.15, 1.0]` (YAML) | Single uniform **RGBA** for all pseudo-measurement spheres; launch does not override. |
 | `imu_history_sec` | `2.0` | Declared for compatibility; **not used** by current ingestion logic (IMU history is trimmed by consumption after **`predict_step`**). |
 | `camera_qos_reliable` | `false` | If **true**, stereo image subscriptions use **reliable** QoS instead of sensor-style best-effort — try if synchronized stereo never arrives from your bag. |
 | `use_stereo` | `true` | If false, stereo sync is not used (see code paths). |
